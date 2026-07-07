@@ -70,11 +70,18 @@ AFTER trigger (DL > 5 Mbps sustained for 3 polls):
 
 Run in order: **uehost2 → uehost1 → gnb2 → gnb1** (leave core running).
 
+> ⚠️ `pkill` on these nodes only accepts one argument. Use `kill -9 <PID>` for precision,
+> or `fuser -k <port>/tcp` to free a specific ZMQ port.
+
 ### uehost2 (pc801)
 
 ```bash
 ssh <user>@pc801.emulab.net
-sudo pkill -9 srsue
+
+# Kill all srsue by PID (pkill -9 srsue works on some nodes; use explicit PIDs if not)
+for PID in $(ps aux | grep '[s]rsue' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
 sleep 2
 ps aux | grep srsue | grep -v grep   # should be empty
 ```
@@ -83,17 +90,24 @@ ps aux | grep srsue | grep -v grep   # should be empty
 
 ```bash
 ssh <user>@pc808.emulab.net
-sudo pkill -9 srsue
+
+for PID in $(ps aux | grep '[s]rsue' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
 sleep 2
-ps aux | grep srsue | grep -v grep
+ps aux | grep srsue | grep -v grep   # should be empty
+ss -tnlp | grep -E "201[0-9]|202[0-9]"   # all UE ZMQ ports must be free
 ```
 
 ### gnb2 (pc802)
 
 ```bash
 ssh <user>@pc802.emulab.net
-sudo pkill -9 srsenb
-sleep 2
+
+for PID in $(ps aux | grep '[s]rsenb' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
+sleep 3
 ss -tnlp | grep -E "30[0-9][0-9]"   # should be empty
 ```
 
@@ -101,8 +115,11 @@ ss -tnlp | grep -E "30[0-9][0-9]"   # should be empty
 
 ```bash
 ssh <user>@pc818.emulab.net
-sudo pkill -9 srsenb
-sleep 2
+
+for PID in $(ps aux | grep '[s]rsenb' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
+sleep 3
 ss -tnlp | grep -E "20[0-9][0-9]"   # should be empty
 ```
 
@@ -150,19 +167,25 @@ sudo tail -f /var/log/open5gs/mme.log
 
 > ⚠️ **Always start gNB BEFORE the UE.**
 > The gNB TX socket is a ZMQ REP that **binds**; the UE RX is a REQ that **connects**.
-> Starting UE first causes a permanent ZMQ deadlock.
+> Starting UE first = permanent ZMQ deadlock (UE stuck at "Attaching UE…" forever).
+
+> ⚠️ **If restarting after a UE was killed:** always restart the gNB too.
+> When srsue dies, the gNB's ZMQ REQ (rx) state machine does not reset.
+> Reusing the old gNB instance means the new UE will never find the cell.
 
 ```bash
 ssh <user>@pc818.emulab.net
 
 mkdir -p /tmp/gnb1_logs
+# Remove old log so this session is clean
+rm -f /tmp/gnb1_logs/ue1_stdout.log
 
 # Start gNB1 instance for UE1
-sudo srsenb /etc/srsenb/enb_ue1.conf \
-  >> /tmp/gnb1_logs/ue1_stdout.log 2>&1 &
+sudo bash -c 'srsenb /etc/srsenb/enb_ue1.conf \
+  >> /tmp/gnb1_logs/ue1_stdout.log 2>&1 &'
 
-# Wait for ZMQ REP socket to bind — critical
-sleep 8
+# Wait for ZMQ REP socket to bind — critical, do not skip
+sleep 10
 
 # Confirm port 2010 is listening
 ss -tnlp | grep 2010
@@ -171,6 +194,10 @@ ss -tnlp | grep 2010
 **Expected:** `LISTEN 0 100 0.0.0.0:2010`
 
 ```bash
+# Verify gNB1 log shows "eNodeB started"
+tail -5 /tmp/gnb1_logs/ue1_stdout.log
+# Expected last line: "Setting frequency: DL=2680.0 Mhz, UL=2560.0 MHz for cc_idx=0 nof_prb=50"
+
 # On core — verify MME accepted the S1 connection
 grep "eNB-S1 accepted\|Number of eNBs" /var/log/open5gs/mme.log | tail -4
 ```
@@ -185,36 +212,40 @@ grep "eNB-S1 accepted\|Number of eNBs" /var/log/open5gs/mme.log | tail -4
 ssh <user>@pc808.emulab.net
 
 mkdir -p /tmp/ue_logs
+rm -f /tmp/ue_logs/ue1_stdout.log
 
-# Start UE1
-sudo srsue /etc/srsue/ue1.conf \
-  >> /tmp/ue_logs/ue1_stdout.log 2>&1 &
+# Start UE1 — use sudo bash -c to keep root capabilities for netns tun creation
+sudo bash -c 'srsue /etc/srsue/ue1.conf \
+  >> /tmp/ue_logs/ue1_stdout.log 2>&1 &'
 
-# Watch progress (allow ~15–20 s)
-tail -f /tmp/ue_logs/ue1_stdout.log
+# Watch progress (allow ~25–35 s)
+sleep 5 && tail -f /tmp/ue_logs/ue1_stdout.log
 ```
 
 **Expected output sequence:**
 
 ```
-Found Cell:  Mode=FDD, PCI=1, PRB=50
+Found Cell:  Mode=FDD, PCI=1, PRB=50, Ports=1, CP=Normal
 Found PLMN:  Id=99970, TAC=1
-Random Access Transmission: seq=...
+Random Access Transmission: seq=..., tti=1141, ra-rnti=0x2
 RRC Connected
 Random Access Complete.  c-rnti=0x46, ta=0
 Network attach successful. IP: 10.45.0.X
 ```
 
 ```bash
-# Verify TUN interface appeared inside the namespace
-ip netns exec ue1 ip addr show
-# Expected: tun_srsue1  inet 10.45.0.X/24
+# Verify TUN appeared in the network namespace
+sudo ip netns exec ue1 ip -br a
+# Expected: tun_srsue1  UNKNOWN  10.45.0.X/24
 
-# Ping test from UE1 to core
-ip netns exec ue1 ping -c 4 10.45.0.1
+# Ping test from UE1 namespace to core PDN gateway
+sudo ip netns exec ue1 ping -c 4 10.45.0.1
 ```
 
-**Expected:** 0% packet loss, RTT ~30–50 ms
+**Expected:** 0% packet loss, RTT ~25–45 ms
+
+> **If ping fails but IP is assigned:** the gNB was recycled from a previous session — restart
+> both gNB and UE from scratch (see [Clean Restart](#clean-restart--ue-wont-connect-after-a-kill)).
 
 ---
 
@@ -223,6 +254,72 @@ ip netns exec ue1 ping -c 4 10.45.0.1
 Repeat the two blocks below for **N = 2, 3, 4 … 10**.
 Always start the gNB instance first, wait 8 s, then the UE.
 
+---
+
+## Clean Restart — UE Won't Connect After a Kill
+
+Use this whenever a UE gets killed and won't reattach (stuck at "Attaching UE…", or "Error initializing radio").
+
+### Step A — Kill ALL UE processes on uehost1 (pc808)
+
+```bash
+ssh <user>@pc808.emulab.net
+
+# Kill every srsue process by PID
+for PID in $(ps aux | grep '[s]rsue' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
+sleep 3
+
+# Confirm ZMQ UE ports are free
+ss -tnlp | grep -E "201[0-9]|202[0-9]" || echo "all UE ports free"
+```
+
+### Step B — Kill and restart gNB1 for the affected UE (pc818)
+
+> Critical: you must restart the gNB, not just the UE. When srsue dies,
+> the gNB ZMQ REQ socket gets stuck and a new UE will never sync.
+
+```bash
+ssh <user>@pc818.emulab.net
+
+# Kill gNB1 instances by PID
+for PID in $(ps aux | grep '[s]rsenb' | awk '{print $2}'); do
+  sudo kill -9 $PID
+done
+sleep 3
+ss -tnlp | grep -E "20[0-9][0-9]" || echo "all gNB1 ports free"
+
+# Restart — e.g. for UE1 (port 2010)
+mkdir -p /tmp/gnb1_logs
+rm -f /tmp/gnb1_logs/ue1_stdout.log
+sudo bash -c 'srsenb /etc/srsenb/enb_ue1.conf >> /tmp/gnb1_logs/ue1_stdout.log 2>&1 &'
+sleep 10
+ss -tnlp | grep 2010 && echo "✓ gNB1-UE1 ready" || echo "✗ start failed"
+```
+
+### Step C — Restart UE1 (pc808)
+
+```bash
+ssh <user>@pc808.emulab.net
+
+rm -f /tmp/ue_logs/ue1_stdout.log
+sudo bash -c 'srsue /etc/srsue/ue1.conf >> /tmp/ue_logs/ue1_stdout.log 2>&1 &'
+
+sleep 30
+grep -E "Network attach|IP:|Error init" /tmp/ue_logs/ue1_stdout.log
+sudo ip netns exec ue1 ip -br a
+sudo ip netns exec ue1 ping -c 4 10.45.0.1
+```
+
+---
+
+## STEP 4 — Add UE2 through UE10 (pc818 + pc808)
+
+Repeat the two blocks below for **N = 2, 3, 4 … 10**.
+Always start the gNB instance first, wait 10 s, then the UE.
+Wait for each UE to attach fully before starting the next gNB+UE pair.
+
 ### On gnb1 (pc818) — start gNB1 instance for UE-N
 
 ```bash
@@ -230,10 +327,13 @@ ssh <user>@pc818.emulab.net
 
 N=2   # change to 3, 4, 5, 6, 7, 8, 9, 10
 
-sudo srsenb /etc/srsenb/enb_ue${N}.conf \
-  >> /tmp/gnb1_logs/ue${N}_stdout.log 2>&1 &
+mkdir -p /tmp/gnb1_logs
+rm -f /tmp/gnb1_logs/ue${N}_stdout.log
 
-sleep 8
+sudo bash -c "srsenb /etc/srsenb/enb_ue${N}.conf \
+  >> /tmp/gnb1_logs/ue${N}_stdout.log 2>&1 &"
+
+sleep 10
 
 # Verify port bound  (formula: 20N0 — e.g. 2020 for N=2)
 PORT=$((N * 10 + 2000))
@@ -247,14 +347,17 @@ ssh <user>@pc808.emulab.net
 
 N=2   # match the gNB instance above
 
-sudo srsue /etc/srsue/ue${N}.conf \
-  >> /tmp/ue_logs/ue${N}_stdout.log 2>&1 &
+mkdir -p /tmp/ue_logs
+rm -f /tmp/ue_logs/ue${N}_stdout.log
 
-sleep 20
-tail -5 /tmp/ue_logs/ue${N}_stdout.log
+sudo bash -c "srsue /etc/srsue/ue${N}.conf \
+  >> /tmp/ue_logs/ue${N}_stdout.log 2>&1 &"
+
+sleep 30
+grep -E "Network attach|IP:|Error init" /tmp/ue_logs/ue${N}_stdout.log
 
 # Verify TUN in namespace
-ip netns exec ue${N} ip addr | grep "inet 10.45"
+sudo ip netns exec ue${N} ip -br a
 ```
 
 ### Quick status check — all UE1–10
@@ -262,7 +365,7 @@ ip netns exec ue${N} ip addr | grep "inet 10.45"
 ```bash
 # Run on uehost1 (pc808)
 for N in $(seq 1 10); do
-  IP=$(ip netns exec ue${N} ip addr 2>/dev/null | grep "inet 10.45" | awk '{print $2}')
+  IP=$(sudo ip netns exec ue${N} ip -br a 2>/dev/null | grep tun_ | awk '{print $3}')
   echo "UE${N}: ${IP:-NOT ATTACHED}"
 done
 ```
