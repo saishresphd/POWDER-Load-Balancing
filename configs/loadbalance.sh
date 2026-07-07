@@ -26,10 +26,10 @@ THRESH_MBPS=${1:-5}          # DL Mbps that triggers migration
 POLL_SEC=${2:-5}             # poll interval (seconds)
 TRIGGER_COUNT=${3:-3}        # consecutive polls above threshold before acting
 
-GNB1="saish@pc818.emulab.net"
-GNB2="saish@pc802.emulab.net"
-UEHOST1="saish@pc808.emulab.net"
-UEHOST2="saish@pc801.emulab.net"
+GNB1="${USER}@pc818.emulab.net"
+GNB2="${USER}@pc802.emulab.net"
+UEHOST1="${USER}@pc808.emulab.net"
+UEHOST2="${USER}@pc801.emulab.net"
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o BatchMode=yes"
 
