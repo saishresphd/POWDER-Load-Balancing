@@ -32,16 +32,72 @@
 
 ---
 
+## GTP Bind Address Map (Critical — one unique IP per srsenb instance)
+
+Because multiple `srsenb` processes share the same physical host, each must bind GTP-U
+(`port 2152`) on a **different IP address**. We use secondary IP aliases on the LAN interface.
+The MME learns each alias as a separate eNB S1-U address.
+
+### gNB1 (pc818) — LAN interface `enp6s0f3`
+
+| gNB1 slot | Serves | gtp_bind_addr | s1c_bind_addr |
+|-----------|--------|---------------|---------------|
+| enb_ue1.conf | UE 1 | `10.10.1.2` | `10.10.1.2` |
+| enb_ue2.conf | UE 2 | `10.10.1.12` | `10.10.1.12` |
+| enb_ue3.conf | UE 3 | `10.10.1.13` | `10.10.1.13` |
+| enb_ue4.conf | UE 4 | `10.10.1.14` | `10.10.1.14` |
+| enb_ue5.conf | UE 5 | `10.10.1.15` | `10.10.1.15` |
+| enb_ue6.conf | UE 6 | `10.10.1.16` | `10.10.1.16` |
+| enb_ue7.conf | UE 7 | `10.10.1.17` | `10.10.1.17` |
+| enb_ue8.conf | UE 8 | `10.10.1.18` | `10.10.1.18` |
+| enb_ue9.conf | UE 9 | `10.10.1.19` | `10.10.1.19` |
+| enb_ue10.conf | UE 10 | `10.10.1.20` | `10.10.1.20` |
+| enb_ue11.conf | UE 11 (phase 1 LB) | `10.10.1.21` | `10.10.1.21` |
+
+### gNB2 (pc802) — LAN interface `enp6s0f3`
+
+| gNB2 slot | Serves | gtp_bind_addr | s1c_bind_addr |
+|-----------|--------|---------------|---------------|
+| enb_ue1.conf | UE 11 | `10.10.1.23` | `10.10.1.23` |
+| enb_ue2.conf | UE 12 | `10.10.1.24` | `10.10.1.24` |
+| enb_ue3.conf | UE 13 | `10.10.1.25` | `10.10.1.25` |
+| enb_ue4.conf | UE 14 | `10.10.1.26` | `10.10.1.26` |
+| enb_ue5.conf | UE 15 | `10.10.1.27` | `10.10.1.27` |
+| enb_ue6.conf | UE 16 | `10.10.1.28` | `10.10.1.28` |
+| enb_ue7.conf | UE 17 | `10.10.1.29` | `10.10.1.29` |
+| enb_ue8.conf | UE 18 | `10.10.1.30` | `10.10.1.30` |
+| enb_ue9.conf | UE 19 | `10.10.1.31` | `10.10.1.31` |
+| enb_ue10.conf | UE 20 | `10.10.1.32` | `10.10.1.32` |
+
+### One-time alias setup (run once per node after reboot)
+
+```bash
+# On gnb1 (pc818)
+ssh <user>@pc818.emulab.net
+for i in $(seq 2 10); do
+  sudo ip addr add 10.10.1.$((i+10))/24 dev enp6s0f3 2>/dev/null
+done
+sudo ip addr add 10.10.1.21/24 dev enp6s0f3 2>/dev/null   # UE11 LB slot
+
+# On gnb2 (pc802)
+ssh <user>@pc802.emulab.net
+for i in $(seq 1 10); do
+  sudo ip addr add 10.10.1.$((i+22))/24 dev enp6s0f3 2>/dev/null
+done
+```
+
+---
+
 ## Load-Balance Flow
 
 ```
 BEFORE trigger:
-  gNB1 (pc818): UE1 … UE10 + UE11   ← UE11 starts here
+  gNB1 (pc818): UE1 … UE10 + UE11   ← UE11 starts here (10.10.1.21)
   gNB2 (pc802): (idle)
 
 AFTER trigger (DL > 5 Mbps sustained for 3 polls):
   gNB1 (pc818): UE1 … UE10
-  gNB2 (pc802): UE11 … UE20         ← UE11 migrated, 12–20 added
+  gNB2 (pc802): UE11 … UE20         ← UE11 migrated (10.10.1.23), 12–20 added
 ```
 
 ---
@@ -697,6 +753,9 @@ ssh <user>@pc818.emulab.net \
 | gNB2 UEs attach to gNB1 cell (wrong gNB) | Both rr.conf had `pci = 1` | gNB2 rr.conf now has `pci = 2` ✅ fixed |
 | MME says "eNB-S1 connection refused!!!" every 2 min | srsenb process died / SCTP path lost | Check gNB `_stdout.log` for crash reason; restart gNB then UE |
 | UE11 doesn't attach after migration to gNB2 | Old UE11 process still running, or gNB2 REP not bound yet | `sudo pkill -9 srsue` on pc801, confirm port 3010 LISTEN, restart UE11 |
+| UE attaches (IP assigned) but **ping 100% loss** | Two `srsenb` sharing `10.10.1.x:2152` — only one process receives DL GTP packets | Assign unique `gtp_bind_addr` + `s1c_bind_addr` per srsenb via IP aliases (see GTP Bind Address Map) |
+| UE won't reattach after being killed | gNB ZMQ REQ (rx) socket stuck on old UE address — new UE never gets IQ stream | Always kill and restart the gNB **before** restarting the UE |
+| IP aliases gone after reboot | `ip addr add` is not persistent across reboots | Re-run the one-time alias setup commands (see GTP Bind Address Map section) |
 
 ### Quick diagnostics one-liners
 
