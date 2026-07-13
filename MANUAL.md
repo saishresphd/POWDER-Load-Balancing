@@ -504,32 +504,90 @@ watch -n2 "tail -1 /tmp/gnb1_ue11_metrics.csv | cut -d';' -f1,2,11"
 
 ---
 
-## STEP 8 — Automated: Run loadbalance.sh
+## STEP 8 — Start the Load-Balance Monitor
 
-The script is at [`configs/loadbalance.sh`](configs/loadbalance.sh).
-Run it from any machine that has SSH key access to all 5 nodes.
+The monitor script is [`configs/loadbalance_monitor.sh`](configs/loadbalance_monitor.sh).
+
+### How it works
+
+```
+1. Waits until all 10 UEs are attached on gNB1
+2. Every poll_sec seconds reads dl_brate from each UE's metrics CSV on gNB1
+3. Computes avg DL Mbps per UE across all 10 UEs
+4. Trigger fires if avg drops < dip_thresh (congestion) OR rises > high_thresh (overload)
+   for dip_count consecutive polls → migrates UE11 from gNB1 to gNB2
+```
+
+### Metrics CSV columns on gNB1
+
+```
+/tmp/gnb1_ue{N}_metrics.csv
+col 1 = TTI    col 2 = nof_ue    col 3 = dl_brate (Mbps)    col 4 = ul_brate (Mbps)
+col 9 = system_load
+```
+
+### Run the monitor
 
 ```bash
 # Syntax
-bash configs/loadbalance.sh [threshold_mbps] [poll_sec] [trigger_count]
+bash configs/loadbalance_monitor.sh [dip_thresh] [high_thresh] [poll_sec] [dip_count]
 
-# Example — trigger at 5 Mbps, poll every 5 s, fire after 3 consecutive hits
-bash configs/loadbalance.sh 5 5 3
+# Default: dip < 1.0 Mbps/UE OR high > 5.0 Mbps/UE, poll 5s, 3 consecutive hits
+bash configs/loadbalance_monitor.sh 1.0 5.0 5 3
+
+# Aggressive: trigger immediately on any dip < 0.5 Mbps/UE
+bash configs/loadbalance_monitor.sh 0.5 5.0 3 2
 ```
 
-**Sample output:**
+### Live monitoring output
 
 ```
-[08:22:10] UE-11 DL throughput on gNB1: 7.42 Mbps (threshold: 5, count: 1/3)
-[08:22:15] UE-11 DL throughput on gNB1: 8.11 Mbps (threshold: 5, count: 2/3)
-[08:22:20] UE-11 DL throughput on gNB1: 7.88 Mbps (threshold: 5, count: 3/3)
-[08:22:20] TRIGGER: gNB1 UE-11 DL > 5 Mbps for 3 polls.
-[08:22:20] Starting migration: UE-11 → gNB2, then UE-12..20 → gNB2
-[08:22:20] Stopping gNB1 instance for UE-11 (port 2110)...
-[08:22:28] gNB2-UE11 started. Waiting 8 s for ZMQ REP socket to bind...
-[08:22:36] UE-11 restarted on gNB2.
-[08:22:51] ✓ UE-11 attached on gNB2. IP: 10.45.0.X/24
-[08:22:51] Load balancing complete. UE 11-20 now on gNB2.
+┌─────────────────────────────────────────────────────┐
+│  gNB1 Throughput Monitor — 10:35:22                 │
+├─────────────────────────────────────────────────────┤
+│  Active UEs     : 10                                │
+│  Total DL       : 32.4     Mbps                     │
+│  Avg DL / UE    : 3.240    Mbps                     │
+│  Dip counter    : 0/3 (thresh < 1.0 Mbps)          │
+│  High counter   : 0/3 (thresh > 5.0 Mbps)          │
+└─────────────────────────────────────────────────────┘
+  UE1:  3.1 Mbps (nof_ue=1)
+  UE2:  3.4 Mbps (nof_ue=1)
+  ...
+  UE10: 3.2 Mbps (nof_ue=1)
+```
+
+### Output when trigger fires
+
+```
+[10:38:11] TRIGGER: HIGH — avg DL = 5.82 Mbps/UE
+[10:38:11] Migrating UE11: gNB1 → gNB2
+[10:38:11] Starting gNB2 instance for UE11 (enb_ue1.conf, port 3010)...
+[10:38:21] ✓ gNB2 port 3010 LISTENING
+[10:38:21] Stopping gNB1 instance for UE11 (port 2110)...
+[10:38:24] ✓ port 2110 free
+[10:38:27] Starting UE11 on uehost2 → gNB2 (ue11.conf)...
+[10:38:57] ✓ UE11 attached on gNB2 — IP: 10.45.0.X/24
+[10:38:57] ✓ UE11 data plane verified on gNB2
+[10:38:57] Migration complete. gNB1: UE1–10 | gNB2: UE11
+```
+
+> Log is saved to `/tmp/lb_monitor_YYYYMMDD_HHMMSS.log` on the machine running the script.
+
+### Simulate a throughput event to trigger the monitor
+
+```bash
+# On core (pc811) — start iperf3 server
+ssh <user>@pc811.emulab.net
+iperf3 -s -B 10.45.0.1 -p 5201 &
+
+# On uehost1 (pc808) — drive DL traffic into UE1 namespace
+ssh <user>@pc808.emulab.net
+sudo ip netns exec ue1 iperf3 -c 10.45.0.1 -p 5201 -t 60 -R -b 20M
+
+# Watch gNB1 metrics live (col3=DL Mbps)
+ssh <user>@pc818.emulab.net \
+  "watch -n1 'tail -1 /tmp/gnb1_ue1_metrics.csv | cut -d\";\" -f1,2,3,4'"
 ```
 
 ---
