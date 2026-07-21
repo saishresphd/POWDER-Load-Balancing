@@ -1,6 +1,8 @@
 # OpenRAN POWDER Testbed — Complete Setup & Load-Balancing Manual
 
-> **Stack:** Open5GS EPC · srsRAN 4G ZMQ · 1 Core · 2 gNBs · 20 UEs · Throughput-triggered handover
+> **Stack:** Open5GS EPC · srsRAN 4G ZMQ · 1 Core · 2 gNBs · **110 UEs** · Throughput + CPU triggered load-balancing handover
+>
+> **Branch `main`** — working 10-UE baseline |  **Branch `110-ue-scale`** — full 110-UE scale-up
 
 ---
 
@@ -9,26 +11,46 @@
 | ID | Node | IP | Role |
 |----|------|----|------|
 | core | pc811 | `10.10.1.1` | Open5GS MME · SGW-C/U · SMF · UPF · HSS · PCRF |
-| gnb1 | pc818 | `10.10.1.2` | srsRAN srsenb — UE 1–10 (+ UE11 initially) |
-| gnb2 | pc802 | `10.10.1.3` | srsRAN srsenb — UE 11–20 (after handover) |
-| uehost1 | pc808 | `10.10.1.4` | srsue — UE 1–10, netns ue1–ue10 |
-| uehost2 | pc801 | `10.10.1.5` | srsue — UE 11–20, netns ue11–ue20 |
+| gnb1 | pc818 | `10.10.1.2` | srsRAN srsenb — 110 slots: UE1–100 base + UE101–110 LB (initially) |
+| gnb2 | pc802 | `10.10.1.3` | srsRAN srsenb — 10 slots: UE101–110 LB targets (after handover) |
+| uehost1 | pc808 | `10.10.1.4` | srsue — UE1–100, netns ue1–ue100 |
+| uehost2 | pc801 | `10.10.1.5` | srsue — UE101–110, netns ue101–ue110 |
 
 ---
 
 ## ZMQ Port Map
 
-| UE | gNB host | gNB TX REP (binds) | UE TX REP (binds) | gNB conf | UE conf |
-|----|----------|--------------------|-------------------|----------|---------|
-| UE 1 | gNB1 | `*:2010` | `pc808:2011` | enb_ue1.conf | ue1.conf |
-| UE 2 | gNB1 | `*:2020` | `pc808:2021` | enb_ue2.conf | ue2.conf |
-| UE 3–10 | gNB1 | `*:20N0` | `pc808:20N1` | enb_ueN.conf | ueN.conf |
-| **UE 11 (phase 1)** | **gNB1** | `*:2110` | `pc801:2111` | **enb_ue11.conf** | **ue11_gnb1.conf** |
-| **UE 11 (phase 2)** | **gNB2** | `*:3010` | `pc801:3011` | **enb_ue1.conf** | **ue11.conf** |
-| UE 12–20 | gNB2 | `*:30J0` | `pc801:30J1` | enb_ue(N-10).conf | ueN.conf |
+### UE1–100 on gNB1 / uehost1
 
-> **Port formula — gNB1:** UE N → gNB TX `20N0`, UE TX `20N1`
-> **Port formula — gNB2:** UE N (J = N−10) → gNB TX `30J0`, UE TX `30J1`
+> **Port formula:** UE index `N` (1–100) → gNB TX `4NNN0`, UE TX `4NNN1`  (NNN = N zero-padded to 3 digits)
+
+| UE range | gNB TX REP (binds on pc818) | UE TX REP (binds on pc808) | gNB conf | UE conf |
+|----------|-----------------------------|---------------------------|----------|---------|
+| UE 1 | `*:40010` | `pc808:40011` | `gnb1/enb_ue1.conf` | `ue1.conf` |
+| UE 2 | `*:40020` | `pc808:40021` | `gnb1/enb_ue2.conf` | `ue2.conf` |
+| UE 10 | `*:40100` | `pc808:40101` | `gnb1/enb_ue10.conf` | `ue10.conf` |
+| UE 50 | `*:40500` | `pc808:40501` | `gnb1/enb_ue50.conf` | `ue50.conf` |
+| UE 100 | `*:41000` | `pc808:41001` | `gnb1/enb_ue100.conf` | `ue100.conf` |
+
+### UE101–110 LB candidates — phase 1 (initially on gNB1 / uehost2)
+
+> **Port formula:** `j = N−100` (1–10) → gNB TX `5JJJ0`, UE TX `5JJJ1`
+
+| UE | gNB TX REP (pc818) | UE TX REP (pc801) | gNB conf | UE conf |
+|----|---------------------|-------------------|----------|---------|
+| UE 101 | `*:50010` | `pc801:50011` | `gnb1/enb_ue101.conf` | `ue101_gnb1.conf` |
+| UE 105 | `*:50050` | `pc801:50051` | `gnb1/enb_ue105.conf` | `ue105_gnb1.conf` |
+| UE 110 | `*:50100` | `pc801:50101` | `gnb1/enb_ue110.conf` | `ue110_gnb1.conf` |
+
+### UE101–110 LB targets — phase 2 (after handover to gNB2 / uehost2)
+
+> **Port formula:** `j = N−100` (1–10) → gNB TX `6JJJ0`, UE TX `6JJJ1`
+
+| UE | gNB TX REP (pc802) | UE TX REP (pc801) | gNB conf | UE conf |
+|----|---------------------|-------------------|----------|---------|
+| UE 101 | `*:60010` | `pc801:60011` | `gnb2/enb_ue101.conf` | `ue101.conf` |
+| UE 105 | `*:60050` | `pc801:60051` | `gnb2/enb_ue105.conf` | `ue105.conf` |
+| UE 110 | `*:60100` | `pc801:60101` | `gnb2/enb_ue110.conf` | `ue110.conf` |
 
 ---
 
@@ -40,51 +62,78 @@ The MME learns each alias as a separate eNB S1-U address.
 
 ### gNB1 (pc818) — LAN interface `enp6s0f3`
 
-| gNB1 slot | Serves | gtp_bind_addr | s1c_bind_addr |
-|-----------|--------|---------------|---------------|
-| enb_ue1.conf | UE 1 | `10.10.1.2` | `10.10.1.2` |
-| enb_ue2.conf | UE 2 | `10.10.1.12` | `10.10.1.12` |
-| enb_ue3.conf | UE 3 | `10.10.1.13` | `10.10.1.13` |
-| enb_ue4.conf | UE 4 | `10.10.1.14` | `10.10.1.14` |
-| enb_ue5.conf | UE 5 | `10.10.1.15` | `10.10.1.15` |
-| enb_ue6.conf | UE 6 | `10.10.1.16` | `10.10.1.16` |
-| enb_ue7.conf | UE 7 | `10.10.1.17` | `10.10.1.17` |
-| enb_ue8.conf | UE 8 | `10.10.1.18` | `10.10.1.18` |
-| enb_ue9.conf | UE 9 | `10.10.1.19` | `10.10.1.19` |
-| enb_ue10.conf | UE 10 | `10.10.1.20` | `10.10.1.20` |
-| enb_ue11.conf | UE 11 (phase 1 LB) | `10.10.1.21` | `10.10.1.21` |
+> **Formula — base slots:** UE `i` (1–100) → `10.10.1.2` (i=1) or `10.10.1.{98+i}` (i=2–100)
+> **Formula — LB slots:** UE `101+j-1` (j=1–10) → `10.10.1.{199+j}`
+
+| gNB1 slot | Serves | gtp_bind_addr / s1c_bind_addr |
+|-----------|--------|-------------------------------|
+| enb_ue1.conf | UE 1 | `10.10.1.2` (primary, no alias) |
+| enb_ue2.conf | UE 2 | `10.10.1.100` |
+| enb_ue3.conf | UE 3 | `10.10.1.101` |
+| enb_ue10.conf | UE 10 | `10.10.1.108` |
+| enb_ue50.conf | UE 50 | `10.10.1.148` |
+| enb_ue100.conf | UE 100 | `10.10.1.198` |
+| enb_ue101.conf | UE 101 (LB) | `10.10.1.200` |
+| enb_ue105.conf | UE 105 (LB) | `10.10.1.204` |
+| enb_ue110.conf | UE 110 (LB) | `10.10.1.209` |
 
 ### gNB2 (pc802) — LAN interface `enp6s0f3`
 
-| gNB2 slot | Serves | gtp_bind_addr | s1c_bind_addr |
-|-----------|--------|---------------|---------------|
-| enb_ue1.conf | UE 11 | `10.10.1.23` | `10.10.1.23` |
-| enb_ue2.conf | UE 12 | `10.10.1.24` | `10.10.1.24` |
-| enb_ue3.conf | UE 13 | `10.10.1.25` | `10.10.1.25` |
-| enb_ue4.conf | UE 14 | `10.10.1.26` | `10.10.1.26` |
-| enb_ue5.conf | UE 15 | `10.10.1.27` | `10.10.1.27` |
-| enb_ue6.conf | UE 16 | `10.10.1.28` | `10.10.1.28` |
-| enb_ue7.conf | UE 17 | `10.10.1.29` | `10.10.1.29` |
-| enb_ue8.conf | UE 18 | `10.10.1.30` | `10.10.1.30` |
-| enb_ue9.conf | UE 19 | `10.10.1.31` | `10.10.1.31` |
-| enb_ue10.conf | UE 20 | `10.10.1.32` | `10.10.1.32` |
+> **Formula — LB targets:** UE `101+j-1` (j=1–10) → `10.10.1.{209+j}`
 
-### One-time alias setup (run once per node after reboot)
+| gNB2 slot | Serves | gtp_bind_addr / s1c_bind_addr |
+|-----------|--------|-------------------------------|
+| enb_ue101.conf | UE 101 | `10.10.1.210` |
+| enb_ue105.conf | UE 105 | `10.10.1.214` |
+| enb_ue110.conf | UE 110 | `10.10.1.219` |
+
+### One-time alias setup (run once per node after every reboot)
+
+Run the script (recommended — handles all ranges automatically):
 
 ```bash
-# On gnb1 (pc818)
-ssh <user>@pc818.emulab.net
-for i in $(seq 2 10); do
-  sudo ip addr add 10.10.1.$((i+10))/24 dev enp6s0f3 2>/dev/null
-done
-sudo ip addr add 10.10.1.21/24 dev enp6s0f3 2>/dev/null   # UE11 LB slot
-
-# On gnb2 (pc802)
-ssh <user>@pc802.emulab.net
-for i in $(seq 1 10); do
-  sudo ip addr add 10.10.1.$((i+22))/24 dev enp6s0f3 2>/dev/null
-done
+bash configs/setup_aliases.sh
 ```
+
+Or set up manually on each node:
+
+```bash
+# ── On gnb1 (pc818) ──────────────────────────────────────────────────────────
+ssh <user>@pc818.emulab.net
+
+DEV=enp6s0f3
+
+# UE2–100 base slots: 10.10.1.100–198  (formula: 10.10.1.{98+i} for i=2..100)
+for i in $(seq 2 100); do
+  sudo ip addr add 10.10.1.$((98 + i))/24 dev $DEV 2>/dev/null || true
+done
+
+# UE101–110 LB slots: 10.10.1.200–209  (formula: 10.10.1.{199+j} for j=1..10)
+for j in $(seq 1 10); do
+  sudo ip addr add 10.10.1.$((199 + j))/24 dev $DEV 2>/dev/null || true
+done
+
+# Verify
+ip addr show $DEV | grep "inet 10.10.1"
+```
+
+```bash
+# ── On gnb2 (pc802) ──────────────────────────────────────────────────────────
+ssh <user>@pc802.emulab.net
+
+DEV=enp6s0f3
+
+# UE101–110 LB targets: 10.10.1.210–219  (formula: 10.10.1.{209+j} for j=1..10)
+for j in $(seq 1 10); do
+  sudo ip addr add 10.10.1.$((209 + j))/24 dev $DEV 2>/dev/null || true
+done
+
+# Verify
+ip addr show $DEV | grep "inet 10.10.1"
+```
+
+> ⚠️ **Aliases are lost on reboot.** Re-run `setup_aliases.sh` after every node reboot
+> before starting any srsenb processes.
 
 ---
 
@@ -92,12 +141,24 @@ done
 
 ```
 BEFORE trigger:
-  gNB1 (pc818): UE1 … UE10 + UE11   ← UE11 starts here (10.10.1.21)
-  gNB2 (pc802): (idle)
+  gNB1 (pc818): UE1…UE100 (base)  +  UE101…UE110 (LB candidates on gNB1)
+  gNB2 (pc802): 10 srsenb LB-target slots running but IDLE (ZMQ REP bound, no UE)
 
-AFTER trigger (DL > 5 Mbps sustained for 3 polls):
-  gNB1 (pc818): UE1 … UE10
-  gNB2 (pc802): UE11 … UE20         ← UE11 migrated (10.10.1.23), 12–20 added
+TRIGGER fires when (either condition sustained for 3 consecutive polls):
+  • avg DL per UE across UE1–100 < 0.5 Mbps  (throughput dip = congestion)
+  • gNB1 CPU load > 80%                        (power-saving / overload)
+
+MIGRATION (one UE at a time, 101→102→…→110):
+  For each LB UE N:
+    1. Start gNB2 slot N (ZMQ REP binds on 6JJJ0)
+    2. Stop  gNB1 slot N
+    3. Stop  UE N process on uehost2 (was using ueN_gnb1.conf → gNB1)
+    4. Start UE N on uehost2 using ueN.conf (→ gNB2)
+    5. Verify attach + ping before migrating next UE
+
+AFTER all 10 migrated:
+  gNB1 (pc818): UE1…UE100
+  gNB2 (pc802): UE101…UE110
 ```
 
 ---
@@ -116,7 +177,7 @@ AFTER trigger (DL > 5 Mbps sustained for 3 polls):
 | gNB1 PCI | 1 |
 | gNB2 PCI | **2** |
 | UE PDN subnet | 10.45.0.0/16 via ogstun |
-| IMSI range | 999700000000001 – 999700000000020 |
+| IMSI range | `999700000000001` – `999700000000110` |
 | K | `00112233445566778899aabbccddeeff` |
 | OPC | `63bfa50ee6523365ff14c1f45f88737d` |
 
@@ -511,83 +572,86 @@ The monitor script is [`configs/loadbalance_monitor.sh`](configs/loadbalance_mon
 ### How it works
 
 ```
-1. Waits until all 10 UEs are attached on gNB1
-2. Every poll_sec seconds reads dl_brate from each UE's metrics CSV on gNB1
-3. Computes avg DL Mbps per UE across all 10 UEs
-4. Trigger fires if avg drops < dip_thresh (congestion) OR rises > high_thresh (overload)
-   for dip_count consecutive polls → migrates UE11 from gNB1 to gNB2
+1. Waits until all 100 base UEs (UE1–100) are attached on gNB1
+2. Every poll_sec seconds:
+   a. Reads dl_brate from /tmp/gnb1_ueN_metrics.csv (N=1..100) on gNB1
+   b. Reads gNB1 1-min CPU load average via /proc/loadavg
+3. Computes avg DL Mbps/UE and CPU utilisation %
+4. THROUGHPUT trigger: avg DL < dip_thresh for dip_count consecutive polls
+   CPU trigger      : CPU% > cpu_thresh for cpu_count consecutive polls
+5. On trigger: migrate UE101–110 to gNB2 one at a time (each with attach+ping verify)
 ```
 
 ### Metrics CSV columns on gNB1
 
 ```
-/tmp/gnb1_ue{N}_metrics.csv
+/tmp/gnb1_ueN_metrics.csv  (N = 1..110)
 col 1 = TTI    col 2 = nof_ue    col 3 = dl_brate (Mbps)    col 4 = ul_brate (Mbps)
-col 9 = system_load
 ```
 
 ### Run the monitor
 
 ```bash
 # Syntax
-bash configs/loadbalance_monitor.sh [dip_thresh] [high_thresh] [poll_sec] [dip_count]
+bash configs/loadbalance_monitor.sh [dip_thresh] [cpu_thresh] [poll_sec] [dip_count] [cpu_count]
 
-# Default: dip < 1.0 Mbps/UE OR high > 5.0 Mbps/UE, poll 5s, 3 consecutive hits
-bash configs/loadbalance_monitor.sh 1.0 5.0 5 3
+# Defaults: DL dip < 0.5 Mbps/UE, CPU > 80%, poll 5s, 3 consecutive hits each
+bash configs/loadbalance_monitor.sh
 
-# Aggressive: trigger immediately on any dip < 0.5 Mbps/UE
-bash configs/loadbalance_monitor.sh 0.5 5.0 3 2
+# Custom: more sensitive DL dip, lower CPU threshold
+bash configs/loadbalance_monitor.sh 1.0 70 5 3 3
 ```
 
 ### Live monitoring output
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  gNB1 Throughput Monitor — 10:35:22                 │
-├─────────────────────────────────────────────────────┤
-│  Active UEs     : 10                                │
-│  Total DL       : 32.4     Mbps                     │
-│  Avg DL / UE    : 3.240    Mbps                     │
-│  Dip counter    : 0/3 (thresh < 1.0 Mbps)          │
-│  High counter   : 0/3 (thresh > 5.0 Mbps)          │
-└─────────────────────────────────────────────────────┘
-  UE1:  3.1 Mbps (nof_ue=1)
-  UE2:  3.4 Mbps (nof_ue=1)
-  ...
-  UE10: 3.2 Mbps (nof_ue=1)
+┌──────────────────────────────────────────────────────────┐
+│  gNB1 Monitor — 10:35:22                                 │
+├──────────────────────────────────────────────────────────┤
+│  Base UEs active : 100  / 100                            │
+│  Total DL        : 48.2     Mbps                         │
+│  Avg DL / UE     : 0.482    Mbps  (thresh < 0.5)        │
+│  gNB1 CPU load   : 72.3 %  (thresh > 80%)               │
+│  Dip  counter    : 2/3                                   │
+│  CPU  counter    : 0/3                                   │
+│  LB migrated     : 0/10 UEs moved to gNB2               │
+│  Trigger         : DIP                                   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### Output when trigger fires
 
 ```
-[10:38:11] TRIGGER: HIGH — avg DL = 5.82 Mbps/UE
-[10:38:11] Migrating UE11: gNB1 → gNB2
-[10:38:11] Starting gNB2 instance for UE11 (enb_ue1.conf, port 3010)...
-[10:38:21] ✓ gNB2 port 3010 LISTENING
-[10:38:21] Stopping gNB1 instance for UE11 (port 2110)...
-[10:38:24] ✓ port 2110 free
-[10:38:27] Starting UE11 on uehost2 → gNB2 (ue11.conf)...
-[10:38:57] ✓ UE11 attached on gNB2 — IP: 10.45.0.X/24
-[10:38:57] ✓ UE11 data plane verified on gNB2
-[10:38:57] Migration complete. gNB1: UE1–10 | gNB2: UE11
+[10:38:11] TRIGGER: DIP — avg_dl=0.421 Mbps/UE  cpu=74.2%
+[10:38:11] Migrating next LB UE to gNB2...
+[10:38:11]   → Migrating UE101 (slot j=1): gNB1 → gNB2
+[10:38:11]     [1/4] Starting gNB2 slot enb_ue101.conf (port 60010)
+[10:38:21]     ✓ gNB2 port 60010 LISTENING
+[10:38:21]     [2/4] Stopping gNB1 slot enb_ue101.conf
+[10:38:23]     [3/4] Stopping UE101 srsue on uehost2 (gnb1 variant)
+[10:38:25]     [4/4] Starting UE101 on uehost2 → gNB2 (ue101.conf)
+[10:38:55]     ✓ UE101 migrated — IP: 10.45.0.102/24  ping: 3 received
+[10:38:55] Migration 1/10 complete (UE101 on gNB2)
 ```
 
 > Log is saved to `/tmp/lb_monitor_YYYYMMDD_HHMMSS.log` on the machine running the script.
 
-### Simulate a throughput event to trigger the monitor
+### Simulate load to trigger the monitor
 
 ```bash
 # On core (pc811) — start iperf3 server
 ssh <user>@pc811.emulab.net
 iperf3 -s -B 10.45.0.1 -p 5201 &
 
-# On uehost1 (pc808) — drive DL traffic into UE1 namespace
+# On uehost1 (pc808) — drive DL traffic into several UE namespaces simultaneously
 ssh <user>@pc808.emulab.net
-sudo ip netns exec ue1 iperf3 -c 10.45.0.1 -p 5201 -t 60 -R -b 20M
+for N in 1 2 3 4 5; do
+  sudo ip netns exec ue${N} iperf3 -c 10.45.0.1 -p 5201 -t 120 -R -b 20M &
+done
 
-# Watch gNB1 metrics live (col3=DL Mbps)
+# Watch gNB1 avg DL metrics live
 ssh <user>@pc818.emulab.net \
-  "watch -n1 'tail -1 /tmp/gnb1_ue1_metrics.csv | cut -d\";\" -f1,2,3,4'"
+  "watch -n2 'tail -1 /tmp/gnb1_ue1_metrics.csv | cut -d\";\" -f1,2,3,4'"
 ```
 
 ---
