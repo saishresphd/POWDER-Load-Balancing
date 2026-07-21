@@ -1,184 +1,212 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # =============================================================================
-# start_network.sh — Start the full O-RAN ZMQ simulation
-# Order: kill all → deploy configs → start core → start gNBs → start UEs
+# start_network.sh
+#
+# Start the full 110-UE O-RAN ZMQ simulation in the correct order:
+#   1. Kill any stale processes on all nodes
+#   2. Ensure IP aliases are in place
+#   3. Deploy configs to all nodes
+#   4. Start gNB1 (110 srsenb slots: UE1–100 base + UE101–110 LB)
+#   5. Start gNB2 (10 srsenb LB-target slots — idle until handover trigger)
+#   6. Start UE1–100 on uehost1  (→ gNB1)
+#   7. Start UE101–110 on uehost2 (→ gNB1, using ueN_gnb1.conf)
+#   8. Verify attachments
 # =============================================================================
-set -e
+set -euo pipefail
 
-CORE=saish@pc811.emulab.net
-GNB1=saish@pc818.emulab.net
-GNB2=saish@pc802.emulab.net
-UH1=saish@pc808.emulab.net
-UH2=saish@pc801.emulab.net
+CORE="saish@pc811.emulab.net"
+GNB1="saish@pc818.emulab.net"
+GNB2="saish@pc802.emulab.net"
+UH1="saish@pc808.emulab.net"
+UH2="saish@pc801.emulab.net"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SSH="ssh -o StrictHostKeyChecking=no"
 
+# ── 1. Kill all existing processes ────────────────────────────────────────────
 echo "============================================================"
-echo " [1/6] Kill all existing srsenb/srsue processes"
+echo " [1/8] Kill all existing srsenb / srsue processes"
 echo "============================================================"
-for host in $GNB1 $GNB2 $UH1 $UH2; do
-  ssh $host 'bash -s' << 'KILLEOF' &
-sudo pkill -9 srsenb 2>/dev/null || true
-sudo pkill -9 srsue  2>/dev/null || true
-# Wait for ports to be released
-sleep 3
-echo "$(hostname -s): processes killed"
-KILLEOF
+for host in "$GNB1" "$GNB2" "$UH1" "$UH2"; do
+  $SSH "$host" 'bash -s' << 'KILL' &
+for P in $(ps aux | grep '[s]rsenb' | awk '{print $2}'); do sudo kill -9 $P 2>/dev/null; done
+for P in $(ps aux | grep '[s]rsue'  | awk '{print $2}'); do sudo kill -9 $P 2>/dev/null; done
+sleep 2
+echo "$(hostname -s): killed"
+KILL
 done
 wait
 sleep 3
 
+# ── 2. IP aliases ──────────────────────────────────────────────────────────────
 echo "============================================================"
-echo " [2/6] Fix MongoDB: remove stale test subscribers"
+echo " [2/8] Ensure IP aliases are present on gNB1 and gNB2"
 echo "============================================================"
-ssh $CORE 'bash -s' << 'EOF'
-mongosh --quiet open5gs --eval '
-  db.subscribers.deleteMany({imsi: {$in: ["999700123456780","999700123456781"]}});
-  var count = db.subscribers.countDocuments();
-  print("Subscribers in DB: " + count);
-'
-EOF
+bash "$SCRIPT_DIR/setup_aliases.sh"
 
+# ── 3. Deploy configs ──────────────────────────────────────────────────────────
 echo "============================================================"
-echo " [3/6] Deploy configs to gNB1, gNB2, uehost1, uehost2"
+echo " [3/8] Deploy configs to gNB1, gNB2, uehost1, uehost2"
 echo "============================================================"
-# --- gNB1 ---
-for f in $SCRIPT_DIR/gnb1/enb_ue*.conf \
-          $SCRIPT_DIR/gnb1/rr.conf \
-          $SCRIPT_DIR/gnb1/sib.conf \
-          $SCRIPT_DIR/gnb1/rb.conf; do
-  scp -q "$f" $GNB1:/tmp/$(basename $f)
+
+# gNB1 — 110 enb confs + rr/sib/rb
+for f in "$SCRIPT_DIR"/gnb1/enb_ue*.conf \
+         "$SCRIPT_DIR"/gnb1/rr.conf; do
+  scp -q "$f" "$GNB1:/tmp/$(basename "$f")"
 done
-ssh $GNB1 'bash -s' << 'EOF'
+$SSH "$GNB1" 'bash -s' << 'EOF'
 sudo cp /tmp/enb_ue*.conf /etc/srsenb/
-sudo cp /tmp/rr.conf /tmp/sib.conf /tmp/rb.conf /etc/srsenb/
-sudo ldconfig
-echo "gNB1: configs deployed"
+sudo cp /tmp/rr.conf      /etc/srsenb/
+echo "gNB1: configs deployed ($(ls /etc/srsenb/enb_ue*.conf | wc -l) enb slots)"
 EOF
 
-# --- gNB2 ---
-for f in $SCRIPT_DIR/gnb2/enb_ue*.conf \
-          $SCRIPT_DIR/gnb2/rr.conf \
-          $SCRIPT_DIR/gnb2/sib.conf \
-          $SCRIPT_DIR/gnb2/rb.conf; do
-  scp -q "$f" $GNB2:/tmp/$(basename $f)
+# gNB2 — 10 LB-target enb confs + rr/sib/rb
+for f in "$SCRIPT_DIR"/gnb2/enb_ue*.conf \
+         "$SCRIPT_DIR"/gnb2/rr.conf; do
+  scp -q "$f" "$GNB2:/tmp/$(basename "$f")"
 done
-ssh $GNB2 'bash -s' << 'EOF'
+$SSH "$GNB2" 'bash -s' << 'EOF'
 sudo cp /tmp/enb_ue*.conf /etc/srsenb/
-sudo cp /tmp/rr.conf /tmp/sib.conf /tmp/rb.conf /etc/srsenb/
-sudo ldconfig
-echo "gNB2: configs deployed"
+sudo cp /tmp/rr.conf      /etc/srsenb/
+echo "gNB2: configs deployed ($(ls /etc/srsenb/enb_ue*.conf | wc -l) enb slots)"
 EOF
 
-# --- uehost1 (UE1-10) ---
-for i in $(seq 1 10); do
-  scp -q $SCRIPT_DIR/ues/ue${i}.conf $UH1:/tmp/ue${i}.conf
+# uehost1 — UE1–100
+for i in $(seq 1 100); do
+  scp -q "$SCRIPT_DIR/ues/ue${i}.conf" "$UH1:/tmp/ue${i}.conf"
 done
-ssh $UH1 'bash -s' << 'EOF'
-for i in $(seq 1 10); do sudo cp /tmp/ue${i}.conf /etc/srsue/ue${i}.conf; done
-# Create netns if missing
-for i in $(seq 1 10); do
-  ip netns list | grep -q "^ue${i}$" 2>/dev/null || sudo ip netns add ue${i}
+$SSH "$UH1" 'bash -s' << 'EOF'
+for i in $(seq 1 100); do sudo cp /tmp/ue${i}.conf /etc/srsue/; done
+for i in $(seq 1 100); do
+  ip netns list 2>/dev/null | grep -q "^ue${i}$" || sudo ip netns add "ue${i}"
+  sudo ip netns exec "ue${i}" ip link del "tun_srsue${i}" 2>/dev/null || true
 done
-# Clean any stale tun interfaces
-for i in $(seq 1 10); do
-  sudo ip netns exec ue${i} ip link del tun_srsue${i} 2>/dev/null || true
-done
-sudo ldconfig
-echo "uehost1: configs deployed, netns ready"
+echo "uehost1: UE1–100 configs deployed, netns ready"
 EOF
 
-# --- uehost2 (UE11-20) ---
-for i in $(seq 11 20); do
-  scp -q $SCRIPT_DIR/ues/ue${i}.conf $UH2:/tmp/ue${i}.conf
+# uehost2 — UE101–110 (initial _gnb1 variants)
+for i in $(seq 101 110); do
+  scp -q "$SCRIPT_DIR/ues/ue${i}_gnb1.conf" "$UH2:/tmp/ue${i}_gnb1.conf"
+  scp -q "$SCRIPT_DIR/ues/ue${i}.conf"      "$UH2:/tmp/ue${i}.conf"
 done
-ssh $UH2 'bash -s' << 'EOF'
-for i in $(seq 11 20); do sudo cp /tmp/ue${i}.conf /etc/srsue/ue${i}.conf; done
-# Create netns if missing
-for i in $(seq 11 20); do
-  ip netns list | grep -q "^ue${i}$" 2>/dev/null || sudo ip netns add ue${i}
+$SSH "$UH2" 'bash -s' << 'EOF'
+for i in $(seq 101 110); do
+  sudo cp /tmp/ue${i}_gnb1.conf /etc/srsue/
+  sudo cp /tmp/ue${i}.conf      /etc/srsue/
 done
-# Clean any stale tun interfaces
-for i in $(seq 11 20); do
-  sudo ip netns exec ue${i} ip link del tun_srsue${i} 2>/dev/null || true
+for i in $(seq 101 110); do
+  ip netns list 2>/dev/null | grep -q "^ue${i}$" || sudo ip netns add "ue${i}"
+  sudo ip netns exec "ue${i}" ip link del "tun_srsue${i}" 2>/dev/null || true
 done
-sudo ldconfig
-echo "uehost2: configs deployed, netns ready"
+echo "uehost2: UE101–110 configs deployed, netns ready"
 EOF
 
+# ── 4. Start gNB1 (110 srsenb slots) ──────────────────────────────────────────
 echo "============================================================"
-echo " [4/6] Start gNBs (one srsenb per UE slot, 10 per gNB)"
+echo " [4/8] Start gNB1 — 110 srsenb slots (UE1–100 base + UE101–110 LB)"
 echo "============================================================"
-ssh $GNB1 'bash -s' << 'EOF'
+$SSH "$GNB1" 'bash -s' << 'EOF'
 mkdir -p /tmp/gnb1_logs
-for i in $(seq 1 10); do
-  sudo srsenb /etc/srsenb/enb_ue${i}.conf \
-    --log.filename=/tmp/gnb1_logs/ue${i}.log \
-    > /tmp/gnb1_logs/ue${i}_stdout.log 2>&1 &
-  echo $! > /tmp/gnb1_ue${i}.pid
-  sleep 0.5
+# Start all 110 slots with a small stagger to avoid MME flood
+for i in $(seq 1 110); do
+  sudo bash -c "srsenb /etc/srsenb/enb_ue${i}.conf \
+    >> /tmp/gnb1_logs/ue${i}_stdout.log 2>&1 &"
+  # brief stagger every 10 slots
+  [ $((i % 10)) -eq 0 ] && sleep 1
 done
-sleep 5
-echo "gNB1: started $(ls /tmp/gnb1_ue*.pid | wc -l) enb instances"
-# Show MME connections
-grep -l "S1Setup" /tmp/gnb1_logs/*_stdout.log 2>/dev/null | wc -l | xargs echo "Instances connected to MME:"
+sleep 8
+RUNNING=$(ps aux | grep '[s]rsenb' | wc -l)
+echo "gNB1: ${RUNNING} srsenb processes running"
 EOF
 
-ssh $GNB2 'bash -s' << 'EOF'
+# ── 5. Start gNB2 (10 LB-target slots — idle, ZMQ REP sockets bound) ──────────
+echo "============================================================"
+echo " [5/8] Start gNB2 — 10 LB-target slots (idle until handover)"
+echo "============================================================"
+$SSH "$GNB2" 'bash -s' << 'EOF'
 mkdir -p /tmp/gnb2_logs
-for i in $(seq 1 10); do
-  sudo srsenb /etc/srsenb/enb_ue${i}.conf \
-    --log.filename=/tmp/gnb2_logs/ue${i}.log \
-    > /tmp/gnb2_logs/ue${i}_stdout.log 2>&1 &
-  echo $! > /tmp/gnb2_ue${i}.pid
-  sleep 0.5
+for i in $(seq 101 110); do
+  sudo bash -c "srsenb /etc/srsenb/enb_ue${i}.conf \
+    >> /tmp/gnb2_logs/ue${i}_stdout.log 2>&1 &"
+  sleep 0.3
 done
 sleep 5
-echo "gNB2: started $(ls /tmp/gnb2_ue*.pid | wc -l) enb instances"
-grep -l "S1Setup" /tmp/gnb2_logs/*_stdout.log 2>/dev/null | wc -l | xargs echo "Instances connected to MME:"
+RUNNING=$(ps aux | grep '[s]rsenb' | wc -l)
+echo "gNB2: ${RUNNING} srsenb processes running (LB targets, waiting for UEs)"
 EOF
 
-echo "Waiting 10s for gNBs to register with MME..."
-sleep 10
+echo "Waiting 15s for all gNBs to register with MME..."
+sleep 15
 
-echo "=== MME: eNB registrations ==="
-ssh $CORE 'sudo tail -5 /var/log/open5gs/mme.log'
+echo "=== MME: eNB S1 registrations ==="
+$SSH "$CORE" "sudo tail -10 /var/log/open5gs/mme.log | grep -i 'setup\|connect' || true"
 
+# ── 6. Start UE1–100 on uehost1 ────────────────────────────────────────────────
 echo "============================================================"
-echo " [5/6] Start UEs (staggered 2s apart)"
+echo " [6/8] Start UE1–100 on uehost1 (staggered, 10 at a time)"
 echo "============================================================"
-ssh $UH1 'bash -s' << 'EOF'
+$SSH "$UH1" 'bash -s' << 'EOF'
 mkdir -p /tmp/ue_logs
-for i in $(seq 1 10); do
-  sudo ip netns exec ue${i} ip link del tun_srsue${i} 2>/dev/null || true
-  sudo srsue /etc/srsue/ue${i}.conf \
-    --log.filename=/tmp/ue_logs/ue${i}.log \
-    > /tmp/ue_logs/ue${i}_stdout.log 2>&1 &
-  echo $! > /tmp/ue${i}.pid
-  echo "  UE${i} started (PID=$!)"
+for i in $(seq 1 100); do
+  sudo ip netns exec "ue${i}" ip link del "tun_srsue${i}" 2>/dev/null || true
+  sudo bash -c "srsue /etc/srsue/ue${i}.conf \
+    >> /tmp/ue_logs/ue${i}_stdout.log 2>&1 &"
+  echo "  UE${i} started"
+  # stagger: 2s between each UE, extra 5s pause every 10 UEs
   sleep 2
+  [ $((i % 10)) -eq 0 ] && sleep 5
 done
-echo "uehost1: all 10 UEs started"
+echo "uehost1: all 100 UEs started"
 EOF
 
-ssh $UH2 'bash -s' << 'EOF'
+# ── 7. Start UE101–110 on uehost2 (→ gNB1 initially) ──────────────────────────
+echo "============================================================"
+echo " [7/8] Start UE101–110 on uehost2 (→ gNB1 using _gnb1.conf)"
+echo "============================================================"
+$SSH "$UH2" 'bash -s' << 'EOF'
 mkdir -p /tmp/ue_logs
-for i in $(seq 11 20); do
-  sudo ip netns exec ue${i} ip link del tun_srsue${i} 2>/dev/null || true
-  sudo srsue /etc/srsue/ue${i}.conf \
-    --log.filename=/tmp/ue_logs/ue${i}.log \
-    > /tmp/ue_logs/ue${i}_stdout.log 2>&1 &
-  echo $! > /tmp/ue${i}.pid
-  echo "  UE${i} started (PID=$!)"
-  sleep 2
+for i in $(seq 101 110); do
+  sudo ip netns exec "ue${i}" ip link del "tun_srsue${i}" 2>/dev/null || true
+  sudo bash -c "srsue /etc/srsue/ue${i}_gnb1.conf \
+    >> /tmp/ue_logs/ue${i}_gnb1_stdout.log 2>&1 &"
+  echo "  UE${i} started (→ gNB1)"
+  sleep 3
 done
-echo "uehost2: all 10 UEs started"
+echo "uehost2: UE101–110 started on gNB1"
 EOF
 
-echo "Waiting 60s for all UEs to attach..."
-sleep 60
+echo ""
+echo "Waiting 90s for all UEs to attach..."
+sleep 90
 
+# ── 8. Verify ──────────────────────────────────────────────────────────────────
 echo "============================================================"
-echo " [6/6] Verify attachments"
+echo " [8/8] Verify attach status"
 echo "============================================================"
-bash "$(dirname "$0")/check_status.sh"
+$SSH "$UH1" 'bash -s' << 'EOF'
+attached=0
+for i in $(seq 1 100); do
+  sudo ip netns exec "ue${i}" ip -br a 2>/dev/null | grep -q tun_ && attached=$((attached+1))
+done
+echo "uehost1: ${attached}/100 UEs attached"
+# Show first 5 IPs as sanity check
+for i in 1 2 3 4 5; do
+  ip=$(sudo ip netns exec "ue${i}" ip -br a 2>/dev/null | grep tun_ | awk '{print $3}')
+  echo "  UE${i}: ${ip:-NOT ATTACHED}"
+done
+EOF
+
+$SSH "$UH2" 'bash -s' << 'EOF'
+attached=0
+for i in $(seq 101 110); do
+  sudo ip netns exec "ue${i}" ip -br a 2>/dev/null | grep -q tun_ && attached=$((attached+1))
+done
+echo "uehost2: ${attached}/10 LB UEs attached (on gNB1)"
+for i in 101 102 103; do
+  ip=$(sudo ip netns exec "ue${i}" ip -br a 2>/dev/null | grep tun_ | awk '{print $3}')
+  echo "  UE${i}: ${ip:-NOT ATTACHED}"
+done
+EOF
+
+echo ""
+echo "Network started.  Run configs/loadbalance_monitor.sh to start load monitoring."

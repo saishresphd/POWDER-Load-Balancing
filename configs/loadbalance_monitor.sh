@@ -3,308 +3,271 @@
 # loadbalance_monitor.sh
 #
 # PURPOSE
-#   Monitor gNB1 after all 10 UEs are attached. When average DL throughput
-#   per UE drops below DIP_THRESH_MBPS for DIP_COUNT consecutive poll cycles,
-#   trigger handover of UE11 from gNB1 → gNB2.
+#   Monitor gNB1 after all 110 UEs are attached.  Detect two overload
+#   conditions and migrate UE101–110 from gNB1 → gNB2 one by one:
 #
-# TRIGGER LOGIC
-#   avg_dl = sum of dl_brate across UE1..10 metrics files / 10
-#   If avg_dl < DIP_THRESH_MBPS for DIP_COUNT polls  →  migrate UE11 to gNB2
-#   (also supports a high-load trigger: avg_dl > HIGH_THRESH_MBPS)
+#   1. THROUGHPUT trigger  — avg DL per UE across UE1–100 drops below
+#                            DIP_THRESH_MBPS for DIP_COUNT consecutive polls
+#                            (indicates gNB1 is congested)
+#
+#   2. CPU trigger         — gNB1 CPU utilisation exceeds CPU_THRESH_PCT
+#                            for CPU_COUNT consecutive polls
+#                            (power-saving / overload protection)
+#
+# MIGRATION BEHAVIOUR
+#   When either trigger fires, UE101–110 are migrated to gNB2 one at a time:
+#     a) Start gNB2 slot for UEi  (srsenb enb_ueN.conf on pc802)
+#     b) Stop  gNB1 slot for UEi
+#     c) Stop  UEi srsue process on uehost2 (was using _gnb1.conf)
+#     d) Start UEi srsue on uehost2 pointing at gNB2 (ue{i}.conf)
+#     e) Verify attach + ping before moving to next UE
 #
 # USAGE
-#   bash configs/loadbalance_monitor.sh [dip_thresh] [high_thresh] [poll_sec] [dip_count]
+#   bash configs/loadbalance_monitor.sh [dip_thresh] [cpu_thresh] [poll_sec] [dip_count] [cpu_count]
 #
-#   dip_thresh  DL Mbps below which gNB1 is considered "loaded/congested" (default 1.0)
-#   high_thresh DL Mbps above which gNB1 is overloaded (default 5.0)
-#   poll_sec    Seconds between polls (default 5)
-#   dip_count   Consecutive polls needed to trigger (default 3)
+#   dip_thresh  Avg DL Mbps/UE below which gNB1 is considered congested (default 0.5)
+#   cpu_thresh  gNB1 CPU% above which power-saving handover triggers     (default 80)
+#   poll_sec    Seconds between polls                                     (default 5)
+#   dip_count   Consecutive dip polls needed to trigger                  (default 3)
+#   cpu_count   Consecutive CPU polls needed to trigger                   (default 3)
 #
 # NODES
-#   core     10.10.1.1  pc811
-#   gnb1     10.10.1.2  pc818
-#   gnb2     10.10.1.3  pc802
-#   uehost1  10.10.1.4  pc808   UE 1-10
-#   uehost2  10.10.1.5  pc801   UE 11-20
+#   core     pc811  10.10.1.1
+#   gnb1     pc818  10.10.1.2   UE1–100 base  +  UE101–110 LB (initial)
+#   gnb2     pc802  10.10.1.3   UE101–110 LB targets
+#   uehost1  pc808  10.10.1.4   UE1–100
+#   uehost2  pc801  10.10.1.5   UE101–110
 # =============================================================================
-
 set -euo pipefail
 
-# ── tuneable parameters ──────────────────────────────────────────────────────
-DIP_THRESH=${1:-1.0}    # Mbps/UE avg below this = congestion / overload dip
-HIGH_THRESH=${2:-5.0}   # Mbps/UE avg above this = high-load overload
+# ── Tuneable parameters ───────────────────────────────────────────────────────
+DIP_THRESH=${1:-0.5}    # Mbps/UE avg — below this = throughput dip trigger
+CPU_THRESH=${2:-80}     # gNB1 CPU %  — above this = CPU overload trigger
 POLL_SEC=${3:-5}        # poll interval in seconds
-DIP_COUNT=${4:-3}       # consecutive polls to trigger migration
+DIP_COUNT=${4:-3}       # consecutive throughput-dip polls to trigger
+CPU_COUNT=${5:-3}       # consecutive CPU-overload polls to trigger
 
 GNB1="saish@pc818.emulab.net"
 GNB2="saish@pc802.emulab.net"
-UEHOST1="saish@pc808.emulab.net"
 UEHOST2="saish@pc801.emulab.net"
-CORE="saish@pc811.emulab.net"
+UEHOST1="saish@pc808.emulab.net"
 
 SSH="ssh -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5"
-
 LOG_FILE="/tmp/lb_monitor_$(date +%Y%m%d_%H%M%S).log"
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# ── Globals ───────────────────────────────────────────────────────────────────
+LAST_AVG_DL=0
+LAST_TOTAL_DL=0
+LAST_ACTIVE_UES=0
+LAST_CPU=0
+MIGRATED_COUNT=0    # how many of UE101-110 have been moved to gNB2
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 log() {
     local msg="[$(date '+%H:%M:%S')] $*"
     echo "$msg"
     echo "$msg" >> "$LOG_FILE"
 }
 
-# Read last dl_brate value from a metrics CSV on gnb1
-# CSV columns: time;nof_ue;dl_brate;ul_brate;...
-get_dl_mbps() {
-    local csv_file="$1"
-    $SSH "$GNB1" "tail -1 $csv_file 2>/dev/null" | \
-        awk -F';' '{if(NF>=3 && $3+0 > 0) printf "%.3f", $3; else print "0"}'
-}
-
-# Read nof_ue from a metrics CSV
-get_nof_ue() {
-    local csv_file="$1"
-    $SSH "$GNB1" "tail -1 $csv_file 2>/dev/null" | \
-        awk -F';' '{print ($2+0 > 0) ? $2 : "0"}'
-}
-
-# Check if a UE netns has an IP (attached)
-ue_attached_host1() {
-    local ns="ue$1"
-    $SSH "$UEHOST1" "sudo ip netns exec $ns ip -br a 2>/dev/null | grep -c tun_" 2>/dev/null | grep -q "^1$"
-}
-
-# Get IP of a UE from its netns
-ue_ip_host1() {
-    local ns="ue$1"
-    $SSH "$UEHOST1" "sudo ip netns exec $ns ip -br a 2>/dev/null | grep tun_ | awk '{print \$3}'" 2>/dev/null
-}
-
-ue_ip_host2() {
-    local ns="ue$1"
-    $SSH "$UEHOST2" "sudo ip netns exec $ns ip -br a 2>/dev/null | grep tun_ | awk '{print \$3}'" 2>/dev/null
-}
-
-# ── wait for all 10 UEs to be attached ──────────────────────────────────────
-wait_for_10_ues() {
-    log "Waiting for all 10 UEs (UE1-10) to attach on gNB1..."
-    while true; do
-        local count=0
-        for n in $(seq 1 10); do
-            $SSH "$UEHOST1" "sudo ip netns exec ue${n} ip -br a 2>/dev/null | grep -q tun_" 2>/dev/null && \
-                count=$((count + 1))
-        done
-        log "  $count/10 UEs attached"
-        if [ "$count" -eq 10 ]; then
-            log "✓ All 10 UEs attached. Starting throughput monitor."
-            break
-        fi
-        sleep 10
-    done
-}
-
-# ── collect current throughput snapshot ─────────────────────────────────────
+# Collect avg DL Mbps across UE1–100 metrics CSVs on gNB1
+# CSV format: time;nof_ue;dl_brate;ul_brate;...
 collect_metrics() {
-    local total=0
-    local count=0
-    local report=""
+    local total=0 active=0
 
-    for n in $(seq 1 10); do
+    for n in $(seq 1 100); do
         local csv="/tmp/gnb1_ue${n}_metrics.csv"
-        local dl
-        dl=$($SSH "$GNB1" "tail -1 $csv 2>/dev/null | awk -F';' '{printf \"%.3f\", \$3+0}'" 2>/dev/null || echo "0")
-        local nue
-        nue=$($SSH "$GNB1" "tail -1 $csv 2>/dev/null | awk -F';' '{print \$2+0}'" 2>/dev/null || echo "0")
-        report="${report}  UE${n}: ${dl} Mbps (nof_ue=${nue})\n"
-        total=$(awk "BEGIN{printf \"%.3f\", $total + $dl}")
-        [ "$nue" -gt 0 ] 2>/dev/null && count=$((count + 1)) || true
+        local row
+        row=$($SSH "$GNB1" "tail -1 '$csv' 2>/dev/null" 2>/dev/null || echo "")
+        local dl nue
+        dl=$(echo "$row"  | awk -F';' '{printf "%.4f", $3+0}')
+        nue=$(echo "$row" | awk -F';' '{print ($2+0 > 0) ? $2 : 0}')
+        total=$(awk "BEGIN{printf \"%.4f\", $total + $dl}")
+        [ "${nue:-0}" -gt 0 ] 2>/dev/null && active=$((active + 1)) || true
     done
 
     LAST_TOTAL_DL=$total
-    LAST_ACTIVE_UES=$count
-    if [ "$count" -gt 0 ]; then
-        LAST_AVG_DL=$(awk "BEGIN{printf \"%.3f\", $total / $count}")
+    LAST_ACTIVE_UES=$active
+    if [ "$active" -gt 0 ]; then
+        LAST_AVG_DL=$(awk "BEGIN{printf \"%.4f\", $total / $active}")
     else
-        LAST_AVG_DL="0"
+        LAST_AVG_DL=0
     fi
-    LAST_REPORT="$report"
 }
 
-# ── start gNB2 instance for UE11 ────────────────────────────────────────────
-start_gnb2_ue11() {
-    log "Starting gNB2 instance for UE11 (enb_ue1.conf, port 3010, GTP 10.10.1.23)..."
-    $SSH "$GNB2" "bash -s" <<'GNBEOF'
-mkdir -p /tmp/gnb2_logs
-rm -f /tmp/gnb2_logs/ue11_stdout.log
-sudo bash -c 'srsenb /etc/srsenb/enb_ue1.conf >> /tmp/gnb2_logs/ue11_stdout.log 2>&1 &'
-GNBEOF
-    log "Waiting 10s for gNB2 ZMQ REP socket to bind..."
+# Read gNB1 CPU utilisation (1-min load average as % of a single core)
+collect_cpu() {
+    local load
+    load=$($SSH "$GNB1" "cat /proc/loadavg 2>/dev/null | awk '{print \$1}'" 2>/dev/null || echo "0")
+    local cores
+    cores=$($SSH "$GNB1" "nproc 2>/dev/null" 2>/dev/null || echo "1")
+    LAST_CPU=$(awk "BEGIN{printf \"%.1f\", ($load / $cores) * 100}")
+}
+
+# Check if UEi netns on uehost2 has a tun IP (attached)
+ue_attached_uh2() {
+    local i=$1
+    $SSH "$UEHOST2" "sudo ip netns exec ue${i} ip -br a 2>/dev/null | grep -q tun_" 2>/dev/null
+}
+
+ue_ip_uh2() {
+    local i=$1
+    $SSH "$UEHOST2" "sudo ip netns exec ue${i} ip -br a 2>/dev/null | grep tun_ | awk '{print \$3}'" 2>/dev/null
+}
+
+# ── Wait for all 100 base UEs to attach on gNB1 ───────────────────────────────
+wait_for_base_ues() {
+    log "Waiting for UE1–100 to attach on gNB1..."
+    while true; do
+        local count=0
+        for n in $(seq 1 100); do
+            $SSH "$UEHOST1" "sudo ip netns exec ue${n} ip -br a 2>/dev/null | grep -q tun_" 2>/dev/null && \
+                count=$((count + 1)) || true
+        done
+        log "  ${count}/100 base UEs attached"
+        [ "$count" -ge 100 ] && break
+        sleep 15
+    done
+    log "✓ All 100 base UEs attached.  Starting throughput + CPU monitor."
+}
+
+# ── Migrate a single LB UE (i = 101..110) gNB1 → gNB2 ───────────────────────
+migrate_ue() {
+    local i=$1
+    local j=$((i - 100))   # slot index 1–10
+    log "  → Migrating UE${i} (slot j=${j}): gNB1 → gNB2"
+
+    # Step 1: start gNB2 slot BEFORE stopping gNB1 slot (ZMQ REP must bind first)
+    log "    [1/4] Starting gNB2 slot enb_ue${i}.conf (port 6${j:?}JJ0, GTP .21${j})"
+    $SSH "$GNB2" "sudo bash -c 'mkdir -p /tmp/gnb2_logs; srsenb /etc/srsenb/enb_ue${i}.conf >> /tmp/gnb2_logs/ue${i}_stdout.log 2>&1 &'"
     sleep 10
-    $SSH "$GNB2" "ss -tnlp | grep 3010" && log "✓ gNB2 port 3010 LISTENING" || \
-        { log "✗ gNB2 failed to start"; return 1; }
-}
+    local gnb2_port
+    gnb2_port=$(printf "6%03d0" "$j")
+    $SSH "$GNB2" "ss -tnlp | grep -q ${gnb2_port}" && \
+        log "    ✓ gNB2 port ${gnb2_port} LISTENING" || \
+        { log "    ✗ gNB2 port ${gnb2_port} not up — aborting UE${i} migration"; return 1; }
 
-# ── stop gNB1 UE11 instance ──────────────────────────────────────────────────
-stop_gnb1_ue11() {
-    log "Stopping gNB1 instance for UE11 (enb_ue11.conf, port 2110)..."
-    $SSH "$GNB1" "sudo bash -c 'pkill -f \"srsenb /etc/srsenb/enb_ue11.conf\" 2>/dev/null; true'"
-    sleep 3
-    $SSH "$GNB1" "ss -tnlp | grep 2110" && \
-        log "⚠ port 2110 still up — force kill" && \
-        $SSH "$GNB1" "for P in \$(ps aux | grep '[e]nb_ue11' | awk '{print \$2}'); do sudo kill -9 \$P 2>/dev/null; done" || \
-        log "✓ port 2110 free"
-}
+    # Step 2: stop gNB1 slot for this UE
+    log "    [2/4] Stopping gNB1 slot enb_ue${i}.conf"
+    $SSH "$GNB1" "for P in \$(ps aux | grep '[e]nb_ue${i}.conf' | awk '{print \$2}'); do sudo kill -9 \$P 2>/dev/null; done; sleep 2"
 
-# ── stop UE11 on uehost2 (gNB1 variant) ─────────────────────────────────────
-stop_ue11_gnb1() {
-    log "Stopping UE11 (pointing at gNB1) on uehost2..."
-    $SSH "$UEHOST2" "for P in \$(ps aux | grep '[s]rsue.*ue11' | awk '{print \$2}'); do sudo kill -9 \$P 2>/dev/null; done; sleep 1"
-    log "✓ UE11 gNB1-variant stopped"
-}
+    # Step 3: stop UE process on uehost2 (was using _gnb1.conf)
+    log "    [3/4] Stopping UE${i} srsue on uehost2 (gnb1 variant)"
+    $SSH "$UEHOST2" "for P in \$(ps aux | grep '[s]rsue.*ue${i}_gnb1' | awk '{print \$2}'); do sudo kill -9 \$P 2>/dev/null; done; sleep 2"
+    $SSH "$UEHOST2" "sudo ip netns exec ue${i} ip link del tun_srsue${i} 2>/dev/null || true"
 
-# ── start UE11 on uehost2 pointing at gNB2 ──────────────────────────────────
-start_ue11_gnb2() {
-    log "Starting UE11 on uehost2 → gNB2 (ue11.conf, rx_port=tcp://10.10.1.3:3010)..."
-    $SSH "$UEHOST2" "bash -s" <<'UEEOF'
-mkdir -p /tmp/ue_logs
-rm -f /tmp/ue_logs/ue11_gnb2_stdout.log
-sudo bash -c 'srsue /etc/srsue/ue11.conf >> /tmp/ue_logs/ue11_gnb2_stdout.log 2>&1 &'
-UEEOF
-    log "Waiting 30s for UE11 to attach on gNB2..."
+    # Step 4: start UE on gNB2 variant
+    log "    [4/4] Starting UE${i} on uehost2 → gNB2 (ue${i}.conf)"
+    $SSH "$UEHOST2" "sudo bash -c 'mkdir -p /tmp/ue_logs; srsue /etc/srsue/ue${i}.conf >> /tmp/ue_logs/ue${i}_gnb2_stdout.log 2>&1 &'"
     sleep 30
-    local ip
-    ip=$(ue_ip_host2 11)
-    if [ -n "$ip" ]; then
-        log "✓ UE11 attached on gNB2 — IP: $ip"
-        return 0
+    if ue_attached_uh2 "$i"; then
+        local ip
+        ip=$(ue_ip_uh2 "$i")
+        # verify ping to core
+        local ping_ok
+        ping_ok=$($SSH "$UEHOST2" "sudo ip netns exec ue${i} ping -c 3 -W 2 10.45.0.1 2>/dev/null | grep -oP '\d+ received'" 2>/dev/null || echo "0 received")
+        if echo "$ping_ok" | grep -q "^[1-9]"; then
+            log "    ✓ UE${i} migrated — IP: ${ip}  ping: ${ping_ok}"
+        else
+            log "    ⚠ UE${i} attached (${ip}) but ping failed — check /tmp/ue_logs/ue${i}_gnb2_stdout.log"
+        fi
     else
-        log "✗ UE11 not attached yet — check /tmp/ue_logs/ue11_gnb2_stdout.log on pc801"
-        # Show last lines of UE11 log for diagnosis
-        $SSH "$UEHOST2" "tail -10 /tmp/ue_logs/ue11_gnb2_stdout.log 2>/dev/null" || true
+        log "    ✗ UE${i} not attached on gNB2 — check logs"
         return 1
     fi
 }
 
-# ── verify UE11 ping on gNB2 ─────────────────────────────────────────────────
-verify_ue11_ping() {
-    log "Pinging core (10.45.0.1) from UE11 netns on gNB2..."
-    local result
-    result=$($SSH "$UEHOST2" "sudo ip netns exec ue11 ping -c 4 -W 2 10.45.0.1 2>/dev/null | grep -oP '\d+ received'" 2>/dev/null || echo "0 received")
-    log "UE11 ping result: $result"
-    echo "$result" | grep -q "^[1-9]"
-}
-
-# ── print current status table ───────────────────────────────────────────────
+# ── Print status table ────────────────────────────────────────────────────────
 print_status() {
-    local avg="$1" total="$2" active="$3" dip_cnt="$4" high_cnt="$5"
-    echo "┌─────────────────────────────────────────────────────┐"
-    echo "│  gNB1 Throughput Monitor — $(date '+%H:%M:%S')              │"
-    echo "├─────────────────────────────────────────────────────┤"
-    printf "│  Active UEs     : %-4s                              │\n" "$active"
-    printf "│  Total DL       : %-8s Mbps                      │\n" "$total"
-    printf "│  Avg DL / UE    : %-8s Mbps                      │\n" "$avg"
-    printf "│  Dip counter    : %s/%s (thresh < %s Mbps)           │\n" \
-        "$dip_cnt" "$DIP_COUNT" "$DIP_THRESH"
-    printf "│  High counter   : %s/%s (thresh > %s Mbps)          │\n" \
-        "$high_cnt" "$DIP_COUNT" "$HIGH_THRESH"
-    echo "└─────────────────────────────────────────────────────┘"
+    local dip_cnt=$1 cpu_cnt=$2 trigger=$3
+    printf "\n┌──────────────────────────────────────────────────────────┐\n"
+    printf "│  gNB1 Monitor — %-42s│\n" "$(date '+%H:%M:%S')"
+    printf "├──────────────────────────────────────────────────────────┤\n"
+    printf "│  Base UEs active : %-4s / 100                            │\n" "$LAST_ACTIVE_UES"
+    printf "│  Total DL        : %-8s Mbps                          │\n" "$LAST_TOTAL_DL"
+    printf "│  Avg DL / UE     : %-8s Mbps  (thresh < %s)          │\n" "$LAST_AVG_DL" "$DIP_THRESH"
+    printf "│  gNB1 CPU load   : %-6s %%  (thresh > %s%%)            │\n" "$LAST_CPU" "$CPU_THRESH"
+    printf "│  Dip  counter    : %s/%s                                  │\n" "$dip_cnt" "$DIP_COUNT"
+    printf "│  CPU  counter    : %s/%s                                  │\n" "$cpu_cnt" "$CPU_COUNT"
+    printf "│  LB migrated     : %s/10 UEs moved to gNB2               │\n" "$MIGRATED_COUNT"
+    printf "│  Trigger         : %-10s                               │\n" "${trigger:-none}"
+    printf "└──────────────────────────────────────────────────────────┘\n"
 }
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# ── Main loop ─────────────────────────────────────────────────────────────────
 main() {
     log "============================================================"
     log "Load-Balance Monitor started"
-    log "  Dip  threshold : < ${DIP_THRESH} Mbps/UE for ${DIP_COUNT} polls"
-    log "  High threshold : > ${HIGH_THRESH} Mbps/UE for ${DIP_COUNT} polls"
-    log "  Poll interval  : ${POLL_SEC}s"
-    log "  Log file       : $LOG_FILE"
+    log "  Throughput dip  : avg DL < ${DIP_THRESH} Mbps/UE for ${DIP_COUNT} polls"
+    log "  CPU overload    : gNB1 CPU > ${CPU_THRESH}% for ${CPU_COUNT} polls"
+    log "  Poll interval   : ${POLL_SEC}s"
+    log "  Log             : $LOG_FILE"
+    log "  LB UEs          : UE101–110 (uehost2 → gNB1 initially → gNB2 on trigger)"
     log "============================================================"
 
-    # Phase 1: wait until all 10 UEs are up
-    wait_for_10_ues
+    wait_for_base_ues
 
     local dip_counter=0
-    local high_counter=0
-    local migrated=false
+    local cpu_counter=0
+    # LB UE list: 101..110 — we work through them in order
+    local -a lb_ues=(101 102 103 104 105 106 107 108 109 110)
 
     log "Entering monitoring loop..."
 
     while true; do
-        if $migrated; then
-            log "Migration complete. Monitor idle. Ctrl+C to exit."
-            # keep running to show UE11 gNB2 status
+        # All LB UEs migrated — just idle
+        if [ "$MIGRATED_COUNT" -ge 10 ]; then
+            log "All 10 LB UEs migrated to gNB2.  Monitor idle.  Ctrl+C to exit."
             sleep 60
             continue
         fi
 
-        # Collect metrics from all 10 UE CSV files on gnb1
         collect_metrics
+        collect_cpu
 
-        # Determine trigger condition
+        # Evaluate triggers
         local trigger=""
         if awk "BEGIN{exit !($LAST_AVG_DL < $DIP_THRESH)}"; then
             dip_counter=$((dip_counter + 1))
-            high_counter=0
+            cpu_counter=0
             trigger="DIP"
-        elif awk "BEGIN{exit !($LAST_AVG_DL > $HIGH_THRESH)}"; then
-            high_counter=$((high_counter + 1))
+        elif awk "BEGIN{exit !($LAST_CPU > $CPU_THRESH)}"; then
+            cpu_counter=$((cpu_counter + 1))
             dip_counter=0
-            trigger="HIGH"
+            trigger="CPU"
         else
             dip_counter=0
-            high_counter=0
+            cpu_counter=0
         fi
 
-        print_status "$LAST_AVG_DL" "$LAST_TOTAL_DL" "$LAST_ACTIVE_UES" \
-                     "$dip_counter" "$high_counter"
+        print_status "$dip_counter" "$cpu_counter" "$trigger"
 
-        # Print per-UE breakdown
-        echo -e "$LAST_REPORT" | grep -v "^$" | sed 's/^/  /'
-
-        # Check trigger
+        # Check if trigger threshold reached
         local fire=false
-        [ "$trigger" = "DIP"  ] && [ "$dip_counter"  -ge "$DIP_COUNT" ]  && fire=true
-        [ "$trigger" = "HIGH" ] && [ "$high_counter" -ge "$DIP_COUNT" ]   && fire=true
+        [ "$trigger" = "DIP" ] && [ "$dip_counter" -ge "$DIP_COUNT" ] && fire=true
+        [ "$trigger" = "CPU" ] && [ "$cpu_counter" -ge "$CPU_COUNT" ] && fire=true
 
         if $fire; then
             log ""
-            log "══════════════════════════════════════════════════════"
-            log "TRIGGER: $trigger — avg DL = ${LAST_AVG_DL} Mbps/UE"
-            log "Migrating UE11: gNB1 → gNB2"
-            log "══════════════════════════════════════════════════════"
+            log "══════════════════════════════════════════════════════════"
+            log "TRIGGER: ${trigger} — avg_dl=${LAST_AVG_DL} Mbps/UE  cpu=${LAST_CPU}%"
+            log "Migrating next LB UE to gNB2..."
+            log "══════════════════════════════════════════════════════════"
 
-            # Step 1: start gNB2 BEFORE stopping UE11 on gNB1
-            if start_gnb2_ue11; then
-                # Step 2: stop gNB1's UE11 srsenb instance
-                stop_gnb1_ue11
-                # Step 3: stop UE11 srsue pointing at gNB1
-                stop_ue11_gnb1
-                sleep 3
-                # Step 4: start UE11 pointing at gNB2
-                if start_ue11_gnb2; then
-                    verify_ue11_ping && \
-                        log "✓ UE11 data plane verified on gNB2" || \
-                        log "⚠ UE11 ping not working — check logs"
-                fi
+            local next_ue=${lb_ues[$MIGRATED_COUNT]}
+            if migrate_ue "$next_ue"; then
+                MIGRATED_COUNT=$((MIGRATED_COUNT + 1))
+                log "Migration ${MIGRATED_COUNT}/10 complete (UE${next_ue} on gNB2)"
             else
-                log "✗ gNB2 start failed — aborting migration"
+                log "⚠ Migration of UE${next_ue} failed — will retry next trigger cycle"
             fi
 
-            log "══════════════════════════════════════════════════════"
-            log "Migration sequence complete."
-            log "gNB1: UE1–10 | gNB2: UE11 (12–20 add manually or run next step)"
-            log "══════════════════════════════════════════════════════"
-            migrated=true
+            # Reset counters after migration attempt
+            dip_counter=0
+            cpu_counter=0
         fi
 
         sleep "$POLL_SEC"
     done
 }
-
-# Initialise globals
-LAST_TOTAL_DL=0
-LAST_ACTIVE_UES=0
-LAST_AVG_DL=0
-LAST_REPORT=""
 
 main "$@"

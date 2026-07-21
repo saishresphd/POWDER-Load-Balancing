@@ -1,55 +1,111 @@
 #!/usr/bin/env python3
 """
-Generate all srsenb and srsue config files for:
-  gNB1 (pc818, 10.10.1.2): serves UE1-10 from uehost1 (10.10.1.4)
-  gNB2 (pc802, 10.10.1.3): serves UE11-20 from uehost2 (10.10.1.5)
+gen_configs.py — Generate srsenb and srsue configs for the 110-UE testbed.
 
-ZMQ port design:
-  UE index i (1-10) on gNB1:
-    srsenb tx_port = tcp://*:2{i:02d}0   (e.g. UE1=2010, UE2=2020 ... UE10=2100)
-    srsenb rx_port = tcp://10.10.1.4:2{i:02d}1
-    srsue  tx_port = tcp://*:2{i:02d}1
-    srsue  rx_port = tcp://10.10.1.2:2{i:02d}0
+TOPOLOGY
+  gNB1  pc818  10.10.1.2   110 srsenb slots
+    Slots  1–100 : base-load UEs from uehost1 (10.10.1.4)
+    Slots 101–110: LB-candidate UEs from uehost2 (10.10.1.5), initially on gNB1
 
-  UE index i (11-20), local j=i-10 (1-10) on gNB2:
-    srsenb tx_port = tcp://*:3{j:02d}0
-    srsenb rx_port = tcp://10.10.1.5:3{j:02d}1
-    srsue  tx_port = tcp://*:3{j:02d}1
-    srsue  rx_port = tcp://10.10.1.3:3{j:02d}0
+  gNB2  pc802  10.10.1.3   10 srsenb slots
+    Slots 101–110: LB-target UEs from uehost2 (10.10.1.5), active after handover
 
-PLMN: MCC=999, MNC=70, TAC=1, dl_earfcn=3350, n_prb=50, base_srate=11.52e6
-Using n_prb=50 (10 MHz) + base_srate=11.52e6 for lower CPU load on ZMQ simulation
+  core  pc811  10.10.1.1   Open5GS EPC (MME/SGW/UPF/HSS)
+  uehost1  pc808  10.10.1.4   UE1–100  (netns ue1–ue100)
+  uehost2  pc801  10.10.1.5   UE101–110 (netns ue101–ue110)
+
+ZMQ PORTS  (all REP-binds on the *:PORT side; REQ-connects on the tcp://IP:PORT side)
+  UE1–100  on gNB1 / uehost1:
+    gNB1 tx REP  tcp://*:4NNN0    NNN = zero-padded UE index  e.g. UE1=40010  UE100=41000
+    gNB1 rx REQ  tcp://10.10.1.4:4NNN1
+    UE   tx REP  tcp://*:4NNN1
+    UE   rx REQ  tcp://10.10.1.2:4NNN0
+
+  UE101–110 on gNB1 / uehost2  (initial, j = i-100, 1–10):
+    gNB1 tx REP  tcp://*:5JJJ0    e.g. UE101=50010  UE110=50100
+    gNB1 rx REQ  tcp://10.10.1.5:5JJJ1
+    UE   tx REP  tcp://*:5JJJ1
+    UE   rx REQ  tcp://10.10.1.2:5JJJ0
+
+  UE101–110 on gNB2 / uehost2  (post-handover, j = i-100, 1–10):
+    gNB2 tx REP  tcp://*:6JJJ0    e.g. UE101=60010  UE110=60100
+    gNB2 rx REQ  tcp://10.10.1.5:6JJJ1
+    UE   tx REP  tcp://*:6JJJ1
+    UE   rx REQ  tcp://10.10.1.3:6JJJ0
+
+GTP BIND ADDRESSES  (one unique IP per srsenb instance to avoid port-2152 clashes)
+  gNB1 base UE1    : 10.10.1.2         (node primary)
+  gNB1 base UE2–100: 10.10.1.{98+i}   → .100–.198
+  gNB1 LB  UE101–110: 10.10.1.{199+j} → .200–.209
+  gNB2 LB  UE101–110: 10.10.1.{209+j} → .210–.219
+
+SUBSCRIBER IMSI
+  UE i → 99970{i:010d}  (15 digits)
+  e.g. UE1=999700000000001  UE100=999700000000100  UE110=999700000000110
+
+NOTE: This script is additive — it skips any file that already exists so that
+      working live configs are never accidentally overwritten.  Delete a file
+      manually and re-run to regenerate it.
 """
 import os
+import glob as _glob
 
-# ─── Parameters ───────────────────────────────────────────────────────────────
-MCC         = "999"
-MNC         = "70"
-TAC         = 1
-DL_EARFCN   = 3350
-N_PRB       = 50          # 10 MHz — less CPU than 100 PRB on ZMQ sim
-BASE_SRATE  = "11.52e6"   # must match n_prb=50
-K           = "00112233445566778899aabbccddeeff"
-OPC         = "63bfa50ee6523365ff14c1f45f88737d"
-MME_ADDR    = "10.10.1.1"
-GNB1_IP     = "10.10.1.2"
-GNB2_IP     = "10.10.1.3"
-UH1_IP      = "10.10.1.4"
-UH2_IP      = "10.10.1.5"
+# ─── Topology constants ────────────────────────────────────────────────────────
+MCC        = "999"
+MNC        = "70"
+DL_EARFCN  = 3350
+N_PRB      = 50           # 10 MHz — lower CPU on ZMQ simulation
+BASE_SRATE = "11.52e6"    # must match n_prb = 50
+K          = "00112233445566778899aabbccddeeff"
+OPC        = "63bfa50ee6523365ff14c1f45f88737d"
+MME_ADDR   = "10.10.1.1"
+GNB1_IP    = "10.10.1.2"
+GNB2_IP    = "10.10.1.3"
+UH1_IP     = "10.10.1.4"   # uehost1  UE1–100
+UH2_IP     = "10.10.1.5"   # uehost2  UE101–110
 
-SIB_CONF    = "/etc/srsenb/sib.conf"
-RR_CONF     = "/etc/srsenb/rr.conf"
-RB_CONF     = "/etc/srsenb/rb.conf"
+SIB_CONF   = "/etc/srsenb/sib.conf"
+RR_CONF    = "/etc/srsenb/rr.conf"
+RB_CONF    = "/etc/srsenb/rb.conf"
 
-# ─── ENB config template ──────────────────────────────────────────────────────
-ENB_TEMPLATE = """\
+# ─── Address helpers ───────────────────────────────────────────────────────────
+
+def gtp_gnb1_base(i):
+    """GTP/S1C bind addr for gNB1 base slot i (1–100).
+    i=1  → 10.10.1.2  (primary, no alias needed)
+    i=2  → 10.10.1.100
+    i=3  → 10.10.1.101
+    ...
+    i=100 → 10.10.1.198
+    """
+    return "10.10.1.2" if i == 1 else f"10.10.1.{98 + i}"
+
+def gtp_gnb1_lb(j):
+    """GTP/S1C bind addr for gNB1 LB slot j (1–10).
+    j=1 → 10.10.1.200 … j=10 → 10.10.1.209
+    """
+    return f"10.10.1.{199 + j}"
+
+def gtp_gnb2_lb(j):
+    """GTP/S1C bind addr for gNB2 LB target slot j (1–10).
+    j=1 → 10.10.1.210 … j=10 → 10.10.1.219
+    """
+    return f"10.10.1.{209 + j}"
+
+def make_imsi(i):
+    """15-digit IMSI: 99970 + i zero-padded to 10 digits."""
+    return f"99970{i:010d}"
+
+# ─── Config templates ──────────────────────────────────────────────────────────
+
+ENB_TMPL = """\
 [enb]
 enb_id = 0x{enb_id:03X}
 mcc = {mcc}
 mnc = {mnc}
 mme_addr = {mme_addr}
-gtp_bind_addr = {gnb_ip}
-s1c_bind_addr = {gnb_ip}
+gtp_bind_addr = {gtp_addr}
+s1c_bind_addr = {gtp_addr}
 s1c_bind_port = 0
 n_prb = {n_prb}
 
@@ -63,25 +119,24 @@ dl_earfcn = {dl_earfcn}
 tx_gain   = 80
 rx_gain   = 40
 device_name = zmq
-device_args = fail_on_disconnect=true,tx_port={tx_port},rx_port={rx_port},id=enb{ue_idx},base_srate={base_srate}
+device_args = fail_on_disconnect=true,tx_port={tx_port},rx_port={rx_port},id={zmq_id},base_srate={base_srate}
 
 [expert]
 rrc_inactivity_timer = 1073741823
 metrics_csv_enable   = true
-metrics_csv_filename = /tmp/gnb{gnb_num}_ue{ue_idx}_metrics.csv
+metrics_csv_filename = {metrics_csv}
 metrics_period_secs  = 1
 
 [log]
 all_level    = info
-filename     = /tmp/gnb{gnb_num}_ue{ue_idx}.log
+filename     = {log_file}
 file_max_size = -1
 
 [pcap]
 enable = false
 """
 
-# ─── UE config template ───────────────────────────────────────────────────────
-UE_TEMPLATE = """\
+UE_TMPL = """\
 [rf]
 freq_offset  = 0
 tx_gain      = 80
@@ -121,8 +176,8 @@ filename     = /tmp/ue{ue_idx}.log
 file_max_size = -1
 """
 
-# ─── rr.conf (same for both gNBs) ─────────────────────────────────────────────
-RR_CONF_CONTENT = """\
+# rr.conf for gNB1 (PCI=1) and gNB2 (PCI=2)
+RR_GNB1 = """\
 mac_cnfg =
 {
   phr_cnfg =
@@ -186,74 +241,154 @@ cell_list =
 nr_cell_list = ();
 """
 
-# ─── Generate files ───────────────────────────────────────────────────────────
+RR_GNB2 = RR_GNB1.replace(
+    "cell_id    = 0x01;", "cell_id    = 0x02;"
+).replace(
+    "pci        = 1;",    "pci        = 2;"
+)
+
+# ─── Helper: write file only if it does not already exist ─────────────────────
+
+def write_if_new(path, content):
+    if os.path.exists(path):
+        return False   # skip — preserve existing working config
+    with open(path, "w") as f:
+        f.write(content)
+    return True
+
+# ─── Ensure directories exist ─────────────────────────────────────────────────
 os.makedirs("configs/gnb1", exist_ok=True)
 os.makedirs("configs/gnb2", exist_ok=True)
 os.makedirs("configs/ues",  exist_ok=True)
 
-# Write shared rr.conf for both gNBs
-for d in ["configs/gnb1", "configs/gnb2"]:
-    with open(f"{d}/rr.conf", "w") as f:
-        f.write(RR_CONF_CONTENT)
+# ─── rr.conf (write only if missing) ─────────────────────────────────────────
+write_if_new("configs/gnb1/rr.conf", RR_GNB1)
+write_if_new("configs/gnb2/rr.conf", RR_GNB2)
 
-# GNB1: UE1-10, enb_id 0x001-0x00A
-for i in range(1, 11):
-    tx_port = f"tcp://*:2{i:02d}0"
-    rx_port = f"tcp://{UH1_IP}:2{i:02d}1"
-    cfg = ENB_TEMPLATE.format(
-        enb_id=i, mcc=MCC, mnc=MNC, mme_addr=MME_ADDR, gnb_ip=GNB1_IP,
+# ─── gNB1: slots 1–100  (base-load UEs, traffic from uehost1) ─────────────────
+created = skipped = 0
+for i in range(1, 101):
+    path = f"configs/gnb1/enb_ue{i}.conf"
+    content = ENB_TMPL.format(
+        enb_id      = i,
+        mcc=MCC, mnc=MNC, mme_addr=MME_ADDR,
+        gtp_addr    = gtp_gnb1_base(i),
         n_prb=N_PRB, dl_earfcn=DL_EARFCN, base_srate=BASE_SRATE,
-        tx_port=tx_port, rx_port=rx_port,
-        ue_idx=i, gnb_num=1,
-        sib_conf=SIB_CONF, rr_conf=RR_CONF, rb_conf=RB_CONF
+        tx_port     = f"tcp://*:4{i:03d}0",
+        rx_port     = f"tcp://{UH1_IP}:4{i:03d}1",
+        zmq_id      = f"enb{i}",
+        metrics_csv = f"/tmp/gnb1_ue{i}_metrics.csv",
+        log_file    = f"/tmp/gnb1_logs/ue{i}.log",
+        sib_conf=SIB_CONF, rr_conf=RR_CONF, rb_conf=RB_CONF,
     )
-    with open(f"configs/gnb1/enb_ue{i}.conf", "w") as f:
-        f.write(cfg)
-    print(f"gnb1/enb_ue{i}.conf: tx={tx_port} rx={rx_port}")
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"gNB1 base  (ue1–100):   {created} created, {skipped} already existed — ports 40010–41000, GTP .2/.100–.198")
 
-# GNB2: UE11-20, enb_id 0x00B-0x014, local j=1-10
-for i in range(11, 21):
-    j = i - 10
-    tx_port = f"tcp://*:3{j:02d}0"
-    rx_port = f"tcp://{UH2_IP}:3{j:02d}1"
-    cfg = ENB_TEMPLATE.format(
-        enb_id=0x10+j, mcc=MCC, mnc=MNC, mme_addr=MME_ADDR, gnb_ip=GNB2_IP,
+# ─── gNB1: slots 101–110  (LB-candidate UEs, traffic from uehost2) ─────────────
+created = skipped = 0
+for i in range(101, 111):
+    j    = i - 100          # local slot index 1–10
+    path = f"configs/gnb1/enb_ue{i}.conf"
+    content = ENB_TMPL.format(
+        enb_id      = 0x100 + j,
+        mcc=MCC, mnc=MNC, mme_addr=MME_ADDR,
+        gtp_addr    = gtp_gnb1_lb(j),
         n_prb=N_PRB, dl_earfcn=DL_EARFCN, base_srate=BASE_SRATE,
-        tx_port=tx_port, rx_port=rx_port,
-        ue_idx=i, gnb_num=2,
-        sib_conf=SIB_CONF, rr_conf=RR_CONF, rb_conf=RB_CONF
+        tx_port     = f"tcp://*:5{j:03d}0",
+        rx_port     = f"tcp://{UH2_IP}:5{j:03d}1",
+        zmq_id      = f"enb{i}",
+        metrics_csv = f"/tmp/gnb1_ue{i}_metrics.csv",
+        log_file    = f"/tmp/gnb1_logs/ue{i}.log",
+        sib_conf=SIB_CONF, rr_conf=RR_CONF, rb_conf=RB_CONF,
     )
-    with open(f"configs/gnb2/enb_ue{j}.conf", "w") as f:
-        f.write(cfg)
-    print(f"gnb2/enb_ue{j}.conf (UE{i}): tx={tx_port} rx={rx_port}")
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"gNB1 LB    (ue101–110): {created} created, {skipped} already existed — ports 50010–50100, GTP .200–.209")
 
-# UE1-10 on uehost1 → connect to gNB1
-for i in range(1, 11):
-    imsi = f"99970000000{i:04d}"
-    tx_port = f"tcp://*:2{i:02d}1"
-    rx_port = f"tcp://{GNB1_IP}:2{i:02d}0"
-    cfg = UE_TEMPLATE.format(
-        ue_idx=i, dl_earfcn=DL_EARFCN, base_srate=BASE_SRATE,
-        tx_port=tx_port, rx_port=rx_port,
-        k=K, opc=OPC, imsi=imsi
+# ─── gNB2: slots 101–110  (LB-target UEs, active after handover) ───────────────
+created = skipped = 0
+for i in range(101, 111):
+    j    = i - 100
+    path = f"configs/gnb2/enb_ue{i}.conf"
+    content = ENB_TMPL.format(
+        enb_id      = 0x200 + j,
+        mcc=MCC, mnc=MNC, mme_addr=MME_ADDR,
+        gtp_addr    = gtp_gnb2_lb(j),
+        n_prb=N_PRB, dl_earfcn=DL_EARFCN, base_srate=BASE_SRATE,
+        tx_port     = f"tcp://*:6{j:03d}0",
+        rx_port     = f"tcp://{UH2_IP}:6{j:03d}1",
+        zmq_id      = f"enb{i}g2",
+        metrics_csv = f"/tmp/gnb2_ue{i}_metrics.csv",
+        log_file    = f"/tmp/gnb2_logs/ue{i}.log",
+        sib_conf=SIB_CONF, rr_conf=RR_CONF, rb_conf=RB_CONF,
     )
-    with open(f"configs/ues/ue{i}.conf", "w") as f:
-        f.write(cfg)
-    print(f"ues/ue{i}.conf: imsi={imsi} tx={tx_port} rx={rx_port}")
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"gNB2 target (ue101–110): {created} created, {skipped} already existed — ports 60010–60100, GTP .210–.219")
 
-# UE11-20 on uehost2 → connect to gNB2
-for i in range(11, 21):
-    j = i - 10
-    imsi = f"99970000000{i:04d}"
-    tx_port = f"tcp://*:3{j:02d}1"
-    rx_port = f"tcp://{GNB2_IP}:3{j:02d}0"
-    cfg = UE_TEMPLATE.format(
-        ue_idx=i, dl_earfcn=DL_EARFCN, base_srate=BASE_SRATE,
-        tx_port=tx_port, rx_port=rx_port,
-        k=K, opc=OPC, imsi=imsi
+# ─── UE1–100: uehost1, always connect to gNB1 ─────────────────────────────────
+created = skipped = 0
+for i in range(1, 101):
+    path = f"configs/ues/ue{i}.conf"
+    content = UE_TMPL.format(
+        ue_idx    = i,
+        dl_earfcn = DL_EARFCN, base_srate=BASE_SRATE,
+        tx_port   = f"tcp://*:4{i:03d}1",
+        rx_port   = f"tcp://{GNB1_IP}:4{i:03d}0",
+        k=K, opc=OPC, imsi=make_imsi(i),
     )
-    with open(f"configs/ues/ue{i}.conf", "w") as f:
-        f.write(cfg)
-    print(f"ues/ue{i}.conf: imsi={imsi} tx={tx_port} rx={rx_port}")
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"UE base    (ue1–100):   {created} created, {skipped} already existed — → gNB1")
 
-print("\nAll configs generated.")
+# ─── UE101–110: uehost2, initial variant pointing at gNB1 ─────────────────────
+created = skipped = 0
+for i in range(101, 111):
+    j    = i - 100
+    path = f"configs/ues/ue{i}_gnb1.conf"
+    content = UE_TMPL.format(
+        ue_idx    = i,
+        dl_earfcn = DL_EARFCN, base_srate=BASE_SRATE,
+        tx_port   = f"tcp://*:5{j:03d}1",
+        rx_port   = f"tcp://{GNB1_IP}:5{j:03d}0",
+        k=K, opc=OPC, imsi=make_imsi(i),
+    )
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"UE LB gnb1 (ue101–110): {created} created, {skipped} already existed — → gNB1 (initial)")
+
+# ─── UE101–110: uehost2, post-handover variant pointing at gNB2 ───────────────
+created = skipped = 0
+for i in range(101, 111):
+    j    = i - 100
+    path = f"configs/ues/ue{i}.conf"
+    content = UE_TMPL.format(
+        ue_idx    = i,
+        dl_earfcn = DL_EARFCN, base_srate=BASE_SRATE,
+        tx_port   = f"tcp://*:6{j:03d}1",
+        rx_port   = f"tcp://{GNB2_IP}:6{j:03d}0",
+        k=K, opc=OPC, imsi=make_imsi(i),
+    )
+    if write_if_new(path, content): created += 1
+    else: skipped += 1
+print(f"UE LB gnb2 (ue101–110): {created} created, {skipped} already existed — → gNB2 (post-HO)")
+
+# ─── Final summary ─────────────────────────────────────────────────────────────
+gnb1_n = len(_glob.glob("configs/gnb1/enb_ue*.conf"))
+gnb2_n = len(_glob.glob("configs/gnb2/enb_ue*.conf"))
+ue_n   = len(_glob.glob("configs/ues/ue*.conf"))
+
+print()
+print("=" * 62)
+print(f"  gNB1 enb configs : {gnb1_n:3d}  (slots 1–100 base + 101–110 LB)")
+print(f"  gNB2 enb configs : {gnb2_n:3d}  (slots 1–10 legacy + 101–110 LB targets)")
+print(f"  UE configs       : {ue_n:3d}  (ue1–100 + ue101–110 + ue101–110_gnb1)")
+print()
+print("  IP aliases required on gNB1 (pc818, enp6s0f3):")
+print("    10.10.1.100–198  UE2–100  (99 aliases, run setup_aliases.sh)")
+print("    10.10.1.200–209  UE101–110 LB slots  (10 aliases)")
+print()
+print("  IP aliases required on gNB2 (pc802, enp6s0f3):")
+print("    10.10.1.210–219  UE101–110 LB targets  (10 aliases)")
+print("=" * 62)
