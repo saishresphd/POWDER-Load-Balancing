@@ -178,20 +178,20 @@ remote_nohup "$GNB2_HOST" \
 # ── Rich gNB metrics (if script present) on gNB1 + gNB2 ─────
 if ssh $SSH_OPTS "$GNB1_HOST" "test -f $COLLECT_DIR/$RICH_GNB_SCRIPT" 2>/dev/null; then
     remote_nohup "$GNB1_HOST" \
-        "bash $COLLECT_DIR/$RICH_GNB_SCRIPT gnb1 1 51 $TOTAL_DURATION_S 5" \
+        "bash $COLLECT_DIR/$RICH_GNB_SCRIPT 5 $TOTAL_DURATION_S gnb1 1 51" \
         "$COLLECT_DIR/rich_gnb1.log"
     remote_nohup "$GNB2_HOST" \
-        "bash $COLLECT_DIR/$RICH_GNB_SCRIPT gnb2 51 51 $TOTAL_DURATION_S 5" \
+        "bash $COLLECT_DIR/$RICH_GNB_SCRIPT 5 $TOTAL_DURATION_S gnb2 51 51" \
         "$COLLECT_DIR/rich_gnb2.log"
 fi
 
 # ── RAPL power (1s interval, needs sudo) on gNB1 + gNB2 ─────
 if ssh $SSH_OPTS "$GNB1_HOST" "test -f $COLLECT_DIR/$POWER_SCRIPT" 2>/dev/null; then
     remote_nohup "$GNB1_HOST" \
-        "sudo bash $COLLECT_DIR/$POWER_SCRIPT $TOTAL_DURATION_S 1 $COLLECT_DIR/power.csv" \
+        "sudo bash $COLLECT_DIR/$POWER_SCRIPT 1 $TOTAL_DURATION_S" \
         "$COLLECT_DIR/power_gnb1.log"
     remote_nohup "$GNB2_HOST" \
-        "sudo bash $COLLECT_DIR/$POWER_SCRIPT $TOTAL_DURATION_S 1 $COLLECT_DIR/power.csv" \
+        "sudo bash $COLLECT_DIR/$POWER_SCRIPT 1 $TOTAL_DURATION_S" \
         "$COLLECT_DIR/power_gnb2.log"
 fi
 
@@ -271,7 +271,7 @@ ATTACHED51=0
 for i in $(seq 1 30); do
     sleep 1
     TUN=$(ssh $SSH_OPTS "$UEHOST2_HOST" \
-        "ip netns exec ue51 ip link show tun_srsue51 2>/dev/null | grep -c UP || echo 0" \
+        "ip netns exec ue51 ip link show tun_srsue 2>/dev/null | grep -c UP || echo 0" \
         2>/dev/null || echo "0")
     if (( TUN >= 1 )); then
         ATTACHED51=1
@@ -363,7 +363,7 @@ ATTACH51_GNB2=0
 for i in $(seq 1 "$HANDOVER_TIMEOUT_S"); do
     sleep 1
     TUN=$(ssh $SSH_OPTS "$UEHOST2_HOST" \
-        "ip netns exec ue51 ip link show tun_srsue51 2>/dev/null | grep -c UP || echo 0" \
+        "ip netns exec ue51 ip link show tun_srsue 2>/dev/null | grep -c UP || echo 0" \
         2>/dev/null || echo "0")
     if (( TUN >= 1 )); then
         ATTACH_TS=$(date '+%s%3N')
@@ -517,4 +517,3 @@ cat "$EXPERIMENT_SUMMARY" | tee -a "$LOG"
 log "=== Experiment complete ==="
 log "Summary: $EXPERIMENT_SUMMARY"
 log "All results: $RESULTS_DIR"
-
