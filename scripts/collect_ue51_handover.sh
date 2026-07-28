@@ -40,7 +40,7 @@ query_nof_ue() {
 
 # Check if ue51 tun/netns is up (tun device exists inside netns)
 ue51_tun_active() {
-    ip netns exec ue51 ip link show tun_srsue 2>/dev/null | grep -c "UP" || echo "0"
+    ip netns exec ue51 ip link show tun_srsue51 2>/dev/null | grep -c "UP" || echo "0"
 }
 
 # Read RAPL package power (1 sample window = INTERVAL_MS)
@@ -170,3 +170,4 @@ done
 log "=== UE51 handover monitor complete. Samples: $sample_count ==="
 log "CSV: $OUTFILE"
 [ -f "$SUMMARY" ] && log "Summary: $SUMMARY"
+
