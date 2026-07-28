@@ -1,375 +1,184 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # =============================================================================
-# master_lb_experiment.sh  —  POWDER Load-Balancing Single-Command Launcher
+# master_lb_experiment.sh  — Full UE51 load-balancing experiment orchestrator
+# Branch: 110-ue-scale
+# Nodes:  gnb1=pc818  gnb2=pc802  core=pc811  uehost1=pc808  uehost2=pc801
+# Run on: uehost1 (pc808)  ssh saish@pc808.emulab.net
 # =============================================================================
-# Orchestrates the full experiment pipeline in order:
-#   1. Deploy  → pre-flight checks, git pull, sync scripts/configs on all nodes
-#   2. Collect → start ALL background collectors on gnb1, gnb2, core, uehost2
-#   3. Run     → 7-phase LB orchestrator on uehost1
-#   4. Harvest → pull all CSVs back to uehost1 results/
-#   5. Analyze → run analyze_lb_results.py to produce key-finding report
-#
-# Usage:
-#   ./master_lb_experiment.sh [--dry-run] [--skip-deploy] [--skip-analyze]
-#
-# Run from: uehost1 (pc808)
-# =============================================================================
-
 set -euo pipefail
 
-###############################################################################
-# CONFIG
-###############################################################################
-REPO_DIR="${HOME}/POWDER-Load-Balancing"
-SCRIPTS_DIR="${REPO_DIR}/scripts"
-COLLECT_DIR="/tmp/ran_collect"
-RESULTS_DIR="${COLLECT_DIR}/results"
-LOG="${COLLECT_DIR}/master_experiment.log"
+REPO_DIR="${REPO_DIR:-$HOME/POWDER-Load-Balancing}"
+LOG_DIR="/tmp/ran_collect"
+RESULTS_DIR="$LOG_DIR/results"
+PHASE_FILE="$LOG_DIR/phase.txt"
 
 GNB1="saish@pc818.emulab.net"
 GNB2="saish@pc802.emulab.net"
 CORE="saish@pc811.emulab.net"
+UEHOST1="saish@pc808.emulab.net"
 UEHOST2="saish@pc801.emulab.net"
+SSH="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10"
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
+mkdir -p "$LOG_DIR" "$RESULTS_DIR"
+exec > >(tee -a "$LOG_DIR/master_experiment.log") 2>&1
 
-DRY_RUN=false
-SKIP_DEPLOY=false
-SKIP_ANALYZE=false
+log() { echo "[$(date '+%H:%M:%S')] $*"; }
+phase() {
+  echo "$1" > "$PHASE_FILE"
+  for node in "$GNB1" "$GNB2" "$CORE" "$UEHOST1" "$UEHOST2"; do
+    $SSH "$node" "mkdir -p /tmp/ran_collect && echo '$1' > /tmp/ran_collect/phase.txt" 2>/dev/null || true
+  done
+  log "=== PHASE: $1 ==="
+}
 
-###############################################################################
-# ARG PARSING
-###############################################################################
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --dry-run)      DRY_RUN=true ;;
-    --skip-deploy)  SKIP_DEPLOY=true ;;
-    --skip-analyze) SKIP_ANALYZE=true ;;
-    *) echo "Unknown flag: $1"; exit 1 ;;
-  esac
-  shift
+# ---------------------------------------------------------------------------
+# PHASE 0: Pre-flight checks
+# ---------------------------------------------------------------------------
+phase "PRE_FLIGHT"
+log "Checking 50 UEs on gnb1..."
+UE_COUNT=$($SSH "$GNB1" "ps aux | grep -c '[s]rsue'" 2>/dev/null || echo 0)
+log "UEs detected on gnb1: $UE_COUNT"
+
+log "Pulling latest scripts on all nodes..."
+for node in "$GNB1" "$GNB2" "$CORE" "$UEHOST1" "$UEHOST2"; do
+  $SSH "$node" "cd $REPO_DIR && git fetch origin 110-ue-scale && git checkout 110-ue-scale && git pull" 2>/dev/null || true
+  $SSH "$node" "chmod +x $REPO_DIR/scripts/*.sh" 2>/dev/null || true
 done
 
-###############################################################################
-# HELPERS
-###############################################################################
-ts()  { date '+%Y-%m-%dT%H:%M:%S'; }
-log() { echo "[$(ts)] $*" | tee -a "$LOG"; }
+# ---------------------------------------------------------------------------
+# PHASE 1: Start collectors on all nodes (pre-LB baseline)
+# ---------------------------------------------------------------------------
+phase "BASELINE_COLLECTION"
+log "Starting deep system monitors on gnb1, gnb2, core..."
 
-rssh() {
-  local host="$1"; shift
-  if $DRY_RUN; then
-    echo "[DRY-RUN] ssh $host: $*"
-    return 0
-  fi
-  ssh $SSH_OPTS "$host" "$@"
-}
+$SSH "$GNB1" "cd $REPO_DIR && nohup bash scripts/launch_gnb1_collectors.sh > /tmp/ran_collect/gnb1_collectors.log 2>&1 &"
+$SSH "$GNB2" "mkdir -p /tmp/ran_collect && nohup bash $REPO_DIR/scripts/collect_system_metrics.sh gnb2 > /tmp/ran_collect/system_metrics_gnb2.log 2>&1 &"
+$SSH "$CORE" "mkdir -p /tmp/ran_collect && nohup bash $REPO_DIR/scripts/collect_system_metrics.sh core > /tmp/ran_collect/system_metrics_core.log 2>&1 &"
+$SSH "$UEHOST1" "cd $REPO_DIR && nohup bash scripts/launch_uehost1_collectors.sh > /tmp/ran_collect/uehost1_collectors.log 2>&1 &"
 
-rscpTo() {
-  # rscpTo <host> <local_src> <remote_dst>
-  local host="$1" src="$2" dst="$3"
-  if $DRY_RUN; then
-    echo "[DRY-RUN] scp $src -> $host:$dst"
-    return 0
-  fi
-  scp $SSH_OPTS "$src" "$host:$dst"
-}
+log "Waiting 10 s for collectors to warm up..."
+sleep 10
 
-rscpFrom() {
-  # rscpFrom <host> <remote_src> <local_dst>
-  local host="$1" src="$2" dst="$3"
-  if $DRY_RUN; then
-    echo "[DRY-RUN] scp $host:$src -> $dst"
-    return 0
-  fi
-  scp $SSH_OPTS "$host:$src" "$dst"
-}
+# ---------------------------------------------------------------------------
+# PHASE 2: Connect UE51 to gNB1
+# ---------------------------------------------------------------------------
+phase "UE51_ATTACH_GNB1"
+log "Starting UE51 on uehost2 → attaching to gnb1..."
+LB_TRIGGER_START_MS=$(date +%s%3N)
 
-check_required() {
-  local missing=0
-  for cmd in ssh scp python3; do
-    if ! command -v "$cmd" &>/dev/null; then
-      log "ERROR: Required command not found: $cmd"
-      missing=1
-    fi
-  done
-  [[ $missing -eq 0 ]] || exit 1
-}
+$SSH "$UEHOST2" "cd $REPO_DIR && nohup bash scripts/deploy_ues_51_100_v2.sh 51 51 > /tmp/ran_collect/ue51_attach.log 2>&1 &"
+log "UE51 start command sent. Waiting 20 s for attach..."
+sleep 20
 
-###############################################################################
-# PHASE 0 — LOCAL SETUP
-###############################################################################
-phase0_local_setup() {
-  log "=== PHASE 0: Local setup ==="
-  mkdir -p "$COLLECT_DIR" "$RESULTS_DIR"
-  mkdir -p "$RESULTS_DIR"/{gnb1,gnb2,core,uehost2}
-  echo "0_setup" > "$COLLECT_DIR/phase.txt"
-  log "Directories created. Log: $LOG"
-}
+UE51_STATUS=$($SSH "$UEHOST2" "ip netns list 2>/dev/null | grep -c ue51 || echo 0")
+log "UE51 netns present: $UE51_STATUS"
 
-###############################################################################
-# PHASE 1 — DEPLOY (pre-flight + sync)
-###############################################################################
-phase1_deploy() {
-  if $SKIP_DEPLOY; then
-    log "=== PHASE 1: SKIPPED (--skip-deploy) ==="
-    return 0
-  fi
-  log "=== PHASE 1: Deploy — pre-flight checks on all nodes ==="
+# ---------------------------------------------------------------------------
+# PHASE 3: Ramp iperf3 throughput to 500 Mbps across all 51 UEs
+# ---------------------------------------------------------------------------
+phase "THROUGHPUT_RAMP_500MBPS"
+log "Starting iperf3 ramp to 500 Mbps across all 51 UEs..."
 
-  if [[ ! -x "${SCRIPTS_DIR}/deploy_experiment.sh" ]]; then
-    log "ERROR: deploy_experiment.sh not found or not executable at ${SCRIPTS_DIR}"
-    exit 1
-  fi
+# Start iperf3 server on core if not running
+$SSH "$CORE" "pkill iperf3 2>/dev/null; sleep 1; nohup bash $REPO_DIR/scripts/start_iperf3_server_core.sh > /tmp/ran_collect/iperf3_server.log 2>&1 &"
+sleep 3
 
-  bash "${SCRIPTS_DIR}/deploy_experiment.sh" $( $DRY_RUN && echo "--dry-run" )
-  log "Deploy complete."
-}
+# Ramp throughput on uehost1 (UEs 1-50) and uehost2 (UE51)
+$SSH "$UEHOST1" "cd $REPO_DIR && nohup bash scripts/run_iperf_500mbps.sh 1 50 > /tmp/ran_collect/iperf_uehost1.log 2>&1 &"
+$SSH "$UEHOST2" "cd $REPO_DIR && nohup bash scripts/run_iperf_500mbps.sh 51 51 > /tmp/ran_collect/iperf_uehost2.log 2>&1 &"
 
-###############################################################################
-# PHASE 2 — START ALL COLLECTORS
-###############################################################################
-phase2_start_collectors() {
-  log "=== PHASE 2: Starting background collectors on all nodes ==="
+log "Throughput ramp started. Collecting 30 s of baseline at load..."
+sleep 30
 
-  # ---- gNB1 collectors ----
-  log "  Starting collectors on gNB1 (pc818)..."
-  rssh "$GNB1" "
-    mkdir -p /tmp/ran_collect
-    nohup bash /tmp/ran_collect/scripts/collect_system_metrics.sh 2 \
-      > /tmp/ran_collect/sysmet_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/sysmet_gnb1.pid
+# Record throughput baseline
+$SSH "$UEHOST1" "cd $REPO_DIR && python3 scripts/build_master_v4.py --phase THROUGHPUT_RAMP_500MBPS --out /tmp/ran_collect/results/ 2>/dev/null || true"
 
-    nohup bash /tmp/ran_collect/scripts/collect_gnb_metrics.sh gnb1 \
-      > /tmp/ran_collect/gnbmet_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/gnbmet_gnb1.pid
+# ---------------------------------------------------------------------------
+# PHASE 4: Record LB trigger timestamp and execute load balance
+# ---------------------------------------------------------------------------
+phase "LB_TRIGGER"
+LB_TS_MS=$(date +%s%3N)
+echo "lb_trigger_ts_ms=$LB_TS_MS" | tee "$LOG_DIR/lb_trigger.txt"
+$SSH "$UEHOST2" "echo 'lb_trigger_ts_ms=$LB_TS_MS' > /tmp/ran_collect/lb_trigger.txt"
+log "LB trigger timestamp: $LB_TS_MS ms"
 
-    nohup sudo bash /tmp/ran_collect/scripts/collect_power.sh 1 \
-      > /tmp/ran_collect/power_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/power_gnb1.pid
+# Start handover monitor on uehost2 BEFORE triggering
+$SSH "$UEHOST2" "cd $REPO_DIR && nohup bash scripts/collect_ue51_handover.sh > /tmp/ran_collect/ue51_handover_monitor.log 2>&1 &"
+sleep 1
 
-    nohup bash /tmp/ran_collect/scripts/collect_rich_gnb.sh gnb1 2 \
-      > /tmp/ran_collect/rich_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/rich_gnb1.pid
+# Execute load balance: disconnect UE51 from gnb1, connect to gnb2
+log "Executing UE51 load balance: gnb1 → gnb2..."
+$SSH "$UEHOST2" "cd $REPO_DIR && bash scripts/run_ue51_lb_experiment.sh > /tmp/ran_collect/ue51_lb.log 2>&1" &
+LB_PID=$!
 
-    nohup python3 /tmp/ran_collect/scripts/deep_sysmon.py gnb1 \
-      > /tmp/ran_collect/deepsys_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/deepsys_gnb1.pid
+# ---------------------------------------------------------------------------
+# PHASE 5: Monitor transition
+# ---------------------------------------------------------------------------
+phase "LB_TRANSITION"
+log "Monitoring LB transition (max 120 s)..."
 
-    nohup bash /tmp/ran_collect/scripts/collect_perf_ipc.sh gnb1 5 \
-      > /tmp/ran_collect/perfipc_gnb1.log 2>&1 &
-    echo \$! > /tmp/ran_collect/perfipc_gnb1.pid
-
-    echo 'gnb1_collectors_started'
-  " || log "WARN: Some gNB1 collectors failed to start"
-
-  # ---- gNB2 collectors ----
-  log "  Starting collectors on gNB2 (pc802)..."
-  rssh "$GNB2" "
-    mkdir -p /tmp/ran_collect
-    nohup bash /tmp/ran_collect/scripts/collect_system_metrics.sh 2 \
-      > /tmp/ran_collect/sysmet_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/sysmet_gnb2.pid
-
-    nohup bash /tmp/ran_collect/scripts/collect_gnb_metrics.sh gnb2 \
-      > /tmp/ran_collect/gnbmet_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/gnbmet_gnb2.pid
-
-    nohup sudo bash /tmp/ran_collect/scripts/collect_power.sh 1 \
-      > /tmp/ran_collect/power_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/power_gnb2.pid
-
-    nohup bash /tmp/ran_collect/scripts/collect_rich_gnb.sh gnb2 2 \
-      > /tmp/ran_collect/rich_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/rich_gnb2.pid
-
-    nohup python3 /tmp/ran_collect/scripts/deep_sysmon.py gnb2 \
-      > /tmp/ran_collect/deepsys_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/deepsys_gnb2.pid
-
-    nohup bash /tmp/ran_collect/scripts/collect_perf_ipc.sh gnb2 5 \
-      > /tmp/ran_collect/perfipc_gnb2.log 2>&1 &
-    echo \$! > /tmp/ran_collect/perfipc_gnb2.pid
-
-    echo 'gnb2_collectors_started'
-  " || log "WARN: Some gNB2 collectors failed to start"
-
-  # ---- Core collectors ----
-  log "  Starting collectors on core (pc811)..."
-  rssh "$CORE" "
-    mkdir -p /tmp/ran_collect
-    nohup bash /tmp/ran_collect/scripts/collect_system_metrics.sh 2 \
-      > /tmp/ran_collect/sysmet_core.log 2>&1 &
-    echo \$! > /tmp/ran_collect/sysmet_core.pid
-    echo 'core_collectors_started'
-  " || log "WARN: Core collector failed to start"
-
-  # ---- uehost2 handover monitor ----
-  log "  Starting handover monitor on uehost2 (pc801)..."
-  rssh "$UEHOST2" "
-    mkdir -p /tmp/ran_collect
-    nohup bash /tmp/ran_collect/scripts/collect_ue51_handover.sh \
-      > /tmp/ran_collect/ue51_handover.log 2>&1 &
-    echo \$! > /tmp/ran_collect/handover_monitor.pid
-    echo 'uehost2_monitor_started'
-  " || log "WARN: uehost2 handover monitor failed to start"
-
-  log "All collectors started. Waiting 5s for them to warm up..."
+for i in $(seq 1 24); do
   sleep 5
-}
-
-###############################################################################
-# PHASE 3 — RUN EXPERIMENT
-###############################################################################
-phase3_run_experiment() {
-  log "=== PHASE 3: Running 7-phase LB experiment ==="
-
-  if [[ ! -x "${SCRIPTS_DIR}/run_ue51_lb_experiment.sh" ]]; then
-    log "ERROR: run_ue51_lb_experiment.sh not found or not executable"
-    exit 1
+  STATUS=$($SSH "$UEHOST2" "cat /tmp/ran_collect/ue51_handover.csv 2>/dev/null | tail -1 || echo 'waiting'")
+  log "  T+$((i*5))s handover status: $STATUS"
+  # Check if UE51 is attached to gnb2
+  ATTACHED=$($SSH "$GNB2" "ps aux 2>/dev/null | grep -c '[s]rsue' || echo 0")
+  if [[ "$ATTACHED" -ge 1 ]]; then
+    log "✅ UE51 detected on gnb2 at T+$((i*5))s"
+    break
   fi
+done
 
-  bash "${SCRIPTS_DIR}/run_ue51_lb_experiment.sh" 2>&1 | tee -a "$LOG"
-  log "7-phase experiment complete."
-}
+LB_COMPLETE_MS=$(date +%s%3N)
+HANDOVER_DURATION_MS=$((LB_COMPLETE_MS - LB_TS_MS))
+log "Handover duration estimate: ${HANDOVER_DURATION_MS} ms"
+echo "HANDOVER_DURATION_MS=$HANDOVER_DURATION_MS" | tee "$LOG_DIR/handover_duration.txt"
+$SSH "$UEHOST2" "echo 'HANDOVER_DURATION_MS=$HANDOVER_DURATION_MS' >> /tmp/ran_collect/ue51_handover_summary.txt"
 
-###############################################################################
-# PHASE 4 — STOP COLLECTORS + HARVEST DATA
-###############################################################################
-phase4_harvest() {
-  log "=== PHASE 4: Stopping collectors and harvesting data ==="
+# ---------------------------------------------------------------------------
+# PHASE 6: Post-LB steady state collection
+# ---------------------------------------------------------------------------
+phase "POST_LB_STEADY"
+log "Collecting post-LB steady state for 60 s..."
+sleep 60
 
-  # Stop all collectors gracefully
-  for node_info in "gnb1:$GNB1" "gnb2:$GNB2" "core:$CORE" "uehost2:$UEHOST2"; do
-    local label="${node_info%%:*}"
-    local host="${node_info##*:}"
-    log "  Stopping collectors on ${label}..."
-    rssh "$host" "
-      for pidfile in /tmp/ran_collect/*.pid; do
-        [ -f \"\$pidfile\" ] || continue
-        pid=\$(cat \"\$pidfile\")
-        if kill -0 \"\$pid\" 2>/dev/null; then
-          kill -TERM \"\$pid\" 2>/dev/null || true
-        fi
-        rm -f \"\$pidfile\"
-      done
-      echo '${label}_collectors_stopped'
-    " || log "WARN: Could not stop some ${label} collectors"
-  done
+# ---------------------------------------------------------------------------
+# PHASE 7: Collect all logs from all nodes
+# ---------------------------------------------------------------------------
+phase "LOG_COLLECTION"
+log "Pulling all CSV logs from remote nodes..."
 
-  sleep 3  # flush final writes
+for node_info in "gnb1:$GNB1" "gnb2:$GNB2" "core:$CORE" "uehost2:$UEHOST2"; do
+  NODE="${node_info%%:*}"
+  ADDR="${node_info##*:}"
+  mkdir -p "$RESULTS_DIR/$NODE"
+  scp -o StrictHostKeyChecking=no "$ADDR:/tmp/ran_collect/*.csv" "$RESULTS_DIR/$NODE/" 2>/dev/null || true
+  scp -o StrictHostKeyChecking=no "$ADDR:/tmp/ran_collect/*.txt" "$RESULTS_DIR/$NODE/" 2>/dev/null || true
+  log "  Pulled logs from $NODE"
+done
 
-  # Pull results from each node
-  log "  Pulling results from gNB1..."
-  rssh "$GNB1" "ls /tmp/ran_collect/*.csv 2>/dev/null || true" | while read -r f; do
-    rscpFrom "$GNB1" "$f" "${RESULTS_DIR}/gnb1/" 2>/dev/null || true
-  done
-  rscpFrom "$GNB1" "/tmp/ran_collect/*.csv"  "${RESULTS_DIR}/gnb1/" 2>/dev/null || true
-  rscpFrom "$GNB1" "/tmp/ran_collect/*.log"  "${RESULTS_DIR}/gnb1/" 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# PHASE 8: Analysis & key findings
+# ---------------------------------------------------------------------------
+phase "ANALYSIS"
+log "Running analysis to generate key findings..."
+python3 "$REPO_DIR/scripts/analyze_lb_results.py" \
+  --results-dir "$RESULTS_DIR" \
+  --out "$RESULTS_DIR/key_findings.txt" \
+  --csv "$RESULTS_DIR/lb_analysis.csv" 2>/dev/null || \
+  log "WARNING: analyze_lb_results.py not found or failed — check $RESULTS_DIR manually"
 
-  log "  Pulling results from gNB2..."
-  rscpFrom "$GNB2" "/tmp/ran_collect/*.csv"  "${RESULTS_DIR}/gnb2/" 2>/dev/null || true
-  rscpFrom "$GNB2" "/tmp/ran_collect/*.log"  "${RESULTS_DIR}/gnb2/" 2>/dev/null || true
+# ---------------------------------------------------------------------------
+# PHASE 9: Stop all collectors
+# ---------------------------------------------------------------------------
+phase "CLEANUP"
+log "Stopping all background collectors..."
+for node in "$GNB1" "$GNB2" "$CORE" "$UEHOST1" "$UEHOST2"; do
+  $SSH "$node" "pkill -f collect_system_metrics || true; pkill -f deep_sysmon || true; pkill -f collect_rich_gnb || true; pkill -f collect_power || true" 2>/dev/null || true
+done
 
-  log "  Pulling results from core..."
-  rscpFrom "$CORE" "/tmp/ran_collect/*.csv"  "${RESULTS_DIR}/core/" 2>/dev/null || true
-
-  log "  Pulling results from uehost2..."
-  rscpFrom "$UEHOST2" "/tmp/ran_collect/*.csv"  "${RESULTS_DIR}/uehost2/" 2>/dev/null || true
-  rscpFrom "$UEHOST2" "/tmp/ran_collect/*.txt"  "${RESULTS_DIR}/uehost2/" 2>/dev/null || true
-
-  # Also pull local uehost1 results
-  mkdir -p "${RESULTS_DIR}/uehost1"
-  cp "$COLLECT_DIR"/*.csv "${RESULTS_DIR}/uehost1/" 2>/dev/null || true
-  cp "$COLLECT_DIR"/*.txt "${RESULTS_DIR}/uehost1/" 2>/dev/null || true
-
-  log "Harvest complete. Results in: ${RESULTS_DIR}"
-  find "${RESULTS_DIR}" -name "*.csv" | sort | tee -a "$LOG"
-}
-
-###############################################################################
-# PHASE 5 — ANALYZE
-###############################################################################
-phase5_analyze() {
-  if $SKIP_ANALYZE; then
-    log "=== PHASE 5: SKIPPED (--skip-analyze) ==="
-    return 0
-  fi
-  log "=== PHASE 5: Running post-experiment analysis ==="
-
-  local analyzer="${SCRIPTS_DIR}/analyze_lb_results.py"
-  if [[ ! -f "$analyzer" ]]; then
-    log "WARN: analyze_lb_results.py not found at ${analyzer}. Skipping."
-    return 0
-  fi
-
-  python3 "$analyzer" \
-    --results-dir "${RESULTS_DIR}" \
-    --output "${COLLECT_DIR}/analysis_report.txt" \
-    2>&1 | tee -a "$LOG"
-
-  if [[ -f "${COLLECT_DIR}/analysis_report.txt" ]]; then
-    log "=== ANALYSIS REPORT ==="
-    cat "${COLLECT_DIR}/analysis_report.txt" | tee -a "$LOG"
-  fi
-}
-
-###############################################################################
-# SUMMARY
-###############################################################################
-print_summary() {
-  log "==================================================================="
-  log "EXPERIMENT COMPLETE"
-  log "==================================================================="
-  log "Results directory : ${RESULTS_DIR}"
-  log "Master log        : ${LOG}"
-  [[ -f "${COLLECT_DIR}/analysis_report.txt" ]] && \
-    log "Analysis report   : ${COLLECT_DIR}/analysis_report.txt"
-  [[ -f "${COLLECT_DIR}/experiment_summary.txt" ]] && \
-    log "Experiment summary: ${COLLECT_DIR}/experiment_summary.txt"
-  log "CSV files collected:"
-  find "${RESULTS_DIR}" -name "*.csv" 2>/dev/null | sort | while read -r f; do
-    local lines
-    lines=$(wc -l < "$f" 2>/dev/null || echo "?")
-    log "  ${lines} rows  ${f}"
-  done
-  log "==================================================================="
-}
-
-###############################################################################
-# TRAP — cleanup on abort
-###############################################################################
-cleanup_on_exit() {
-  local rc=$?
-  if [[ $rc -ne 0 ]]; then
-    log "ERROR: master_lb_experiment.sh exited with code $rc"
-    log "Attempting emergency collector shutdown..."
-    for host in "$GNB1" "$GNB2" "$CORE" "$UEHOST2"; do
-      ssh $SSH_OPTS "$host" \
-        "pkill -f 'collect_system_metrics\|collect_gnb_metrics\|collect_power\|collect_rich_gnb\|deep_sysmon\|collect_perf_ipc\|collect_ue51_handover' 2>/dev/null || true" \
-        2>/dev/null || true
-    done
-  fi
-}
-trap cleanup_on_exit EXIT
-
-###############################################################################
-# MAIN
-###############################################################################
-main() {
-  check_required
-  mkdir -p "$COLLECT_DIR"
-  log "=================================================================="
-  log "POWDER Load-Balancing Master Experiment  (dry_run=${DRY_RUN})"
-  log "=================================================================="
-
-  phase0_local_setup
-  phase1_deploy
-  phase2_start_collectors
-  phase3_run_experiment
-  phase4_harvest
-  phase5_analyze
-  print_summary
-}
-
-main "$@"
+phase "COMPLETE"
+log "=== Experiment complete ==="
+log "Results: $RESULTS_DIR"
+log "Key findings: $RESULTS_DIR/key_findings.txt"
+log "Handover duration: ${HANDOVER_DURATION_MS} ms"
