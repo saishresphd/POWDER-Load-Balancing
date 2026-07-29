@@ -52,7 +52,7 @@ phase "BASELINE_COLLECTION"
 log "Starting deep system monitors on gnb1, gnb2, core..."
 
 $SSH "$GNB1" "cd $REPO_DIR && nohup bash scripts/launch_gnb1_collectors.sh > /tmp/ran_collect/gnb1_collectors.log 2>&1 &"
-$SSH "$GNB2" "mkdir -p /tmp/ran_collect && nohup bash $REPO_DIR/scripts/collect_system_metrics.sh gnb2 > /tmp/ran_collect/system_metrics_gnb2.log 2>&1 &"
+$SSH "$GNB2" "mkdir -p /tmp/ran_collect ; nohup bash $REPO_DIR/scripts/collect_system_metrics.sh gnb2 > /tmp/ran_collect/system_metrics_gnb2.log 2>&1 & nohup bash $REPO_DIR/scripts/collect_gnb_metrics.sh 5 7200 gnb2 51 51 > /tmp/ran_collect/gnb_metrics_gnb2.log 2>&1 & nohup bash $REPO_DIR/scripts/collect_power.sh gnb2 > /tmp/ran_collect/power_gnb2.log 2>&1 & nohup python3 $REPO_DIR/scripts/deep_sysmon.py 7200 2 srsenb /tmp/ran_collect/deep_sysmon_gnb2.csv > /tmp/ran_collect/deep_sysmon_gnb2.log 2>&1 & nohup bash $REPO_DIR/scripts/collect_perf_ipc.sh gnb2 > /tmp/ran_collect/perf_ipc_gnb2.log 2>&1 & ln -sf /tmp/ran_collect/gnb_metrics.csv /tmp/ran_collect/gnb_metrics_raw_gnb2.csv"
 $SSH "$CORE" "mkdir -p /tmp/ran_collect && nohup bash $REPO_DIR/scripts/collect_system_metrics.sh core > /tmp/ran_collect/system_metrics_core.log 2>&1 &"
 $SSH "$UEHOST1" "cd $REPO_DIR && nohup bash scripts/launch_uehost1_collectors.sh > /tmp/ran_collect/uehost1_collectors.log 2>&1 &"
 
@@ -108,7 +108,7 @@ sleep 1
 
 # Execute load balance: disconnect UE51 from gnb1, connect to gnb2
 log "Executing UE51 load balance: gnb1 → gnb2..."
-$SSH "$UEHOST2" "cd $REPO_DIR && bash scripts/run_ue51_lb_experiment.sh > /tmp/ran_collect/ue51_lb.log 2>&1" &
+$SSH "$UEHOST2" "cd $REPO_DIR && bash scripts/run_ue51_lb_experiment.sh --skip-ue-start --skip-iperf-ramp > /tmp/ran_collect/ue51_lb.log 2>&1" &
 LB_PID=$!
 
 # ---------------------------------------------------------------------------
@@ -182,3 +182,4 @@ log "=== Experiment complete ==="
 log "Results: $RESULTS_DIR"
 log "Key findings: $RESULTS_DIR/key_findings.txt"
 log "Handover duration: ${HANDOVER_DURATION_MS} ms"
+
