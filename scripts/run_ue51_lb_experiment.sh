@@ -18,6 +18,16 @@
 # ============================================================
 set -euo pipefail
 
+# ── Argument parsing ─────────────────────────────────────────────────────────
+SKIP_UE_START=0
+SKIP_IPERF_RAMP=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-ue-start)   SKIP_UE_START=1 ;;
+        --skip-iperf-ramp) SKIP_IPERF_RAMP=1 ;;
+    esac
+done
+
 # ── Node addresses ──────────────────────────────────────────
 CORE_HOST="saish@10.10.1.1"
 GNB1_HOST="saish@10.10.1.2"
@@ -232,6 +242,7 @@ log "Phase 1: Holding baseline for ${PHASE1_BASELINE_S}s..."
 sleep "$PHASE1_BASELINE_S"
 log "Phase 1 baseline complete."
 
+if (( SKIP_UE_START == 0 )); then
 # ══════════════════════════════════════════════════════════════
 # PHASE 2: Connect UE51 to gNB1
 # ══════════════════════════════════════════════════════════════
@@ -284,7 +295,9 @@ if (( ATTACHED51 == 0 )); then
 fi
 
 log "Phase 2 complete. UE51 on gNB1."
+fi  # end SKIP_UE_START
 
+if (( SKIP_IPERF_RAMP == 0 )); then
 # ══════════════════════════════════════════════════════════════
 # PHASE 3: Ramp all 51 UEs to 500 Mbps
 # ══════════════════════════════════════════════════════════════
@@ -297,6 +310,7 @@ nohup bash "$COLLECT_DIR/$IPERF_500_SCRIPT" 51 15 \
 RAMP_PID=$!
 wait "$RAMP_PID" || log "WARNING: iperf ramp exited non-zero"
 log "Phase 3 ramp complete."
+fi  # end SKIP_IPERF_RAMP
 
 # ══════════════════════════════════════════════════════════════
 # PHASE 4: Hold at 500 Mbps — peak-load steady state
@@ -517,3 +531,4 @@ cat "$EXPERIMENT_SUMMARY" | tee -a "$LOG"
 log "=== Experiment complete ==="
 log "Summary: $EXPERIMENT_SUMMARY"
 log "All results: $RESULTS_DIR"
+
