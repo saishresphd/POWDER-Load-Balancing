@@ -1,0 +1,20 @@
+=== RAPL Power Measurement (gnb1 with 50 UEs) ===
+Time: Tue Aug 18 10:25:59 AM UTC 2026
+
+  package-0: 22.390W  (delta=44779mJ/2s)
+  package-1: 20.607W  (delta=41213mJ/2s)
+
+=== DRAM power ===
+  pkg0 dram: 3.209W
+  pkg1 dram: 2.976W
+
+=== CPU frequency summary at this moment ===
+  Max core freq: 1798026 Hz (1.80 GHz)
+  Avg core freq: 1413495 Hz (1.41 GHz)
+
+=== UE50 srsenb process stats ===
+ 110735 22.4  1.2 855588 1666488 15 srsenb /etc/srsenb/enb_ue50.conf
+  VmPeak: 1666488 kB
+  VmRSS:  855588 kB
+  Threads: 15
+  Sched: 2822082817420 1141518442831 259061553

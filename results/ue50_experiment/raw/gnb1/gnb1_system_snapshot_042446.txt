@@ -1,0 +1,137 @@
+=== TIMESTAMP: Tue Aug 18 10:24:46 AM UTC 2026 ===
+
+=== CPU per-core utilization (live 1s sample) ===
+  cpu0: 24.0% busy  (user=9.6 irq=0.0 sirq=0.7 idle=76.0)
+  cpu1: 13.5% busy  (user=5.6 irq=0.0 sirq=0.0 idle=86.5)
+  cpu2: 26.6% busy  (user=12.7 irq=0.0 sirq=0.2 idle=73.4)
+  cpu3: 13.3% busy  (user=5.5 irq=0.0 sirq=0.0 idle=86.7)
+  cpu4: 22.1% busy  (user=9.0 irq=0.0 sirq=0.1 idle=77.9)
+  cpu5: 13.5% busy  (user=5.7 irq=0.0 sirq=0.0 idle=86.5)
+  cpu6: 22.7% busy  (user=9.0 irq=0.0 sirq=0.6 idle=77.3)
+  cpu7: 12.9% busy  (user=5.2 irq=0.0 sirq=0.0 idle=87.1)
+  cpu8: 23.3% busy  (user=9.2 irq=0.0 sirq=1.1 idle=76.7)
+  cpu9: 13.1% busy  (user=5.3 irq=0.0 sirq=0.0 idle=86.9)
+  cpu10: 21.1% busy  (user=8.9 irq=0.0 sirq=0.1 idle=78.9)
+  cpu11: 13.8% busy  (user=5.4 irq=0.0 sirq=0.0 idle=86.2)
+  cpu12: 24.6% busy  (user=11.7 irq=0.0 sirq=0.3 idle=75.4)
+  cpu13: 13.1% busy  (user=5.2 irq=0.0 sirq=0.0 idle=86.9)
+  cpu14: 27.7% busy  (user=8.8 irq=0.0 sirq=7.9 idle=72.3)
+  cpu15: 13.0% busy  (user=5.1 irq=0.0 sirq=0.0 idle=87.0)
+  cpu16: 27.7% busy  (user=8.1 irq=0.0 sirq=9.2 idle=72.3)
+  cpu17: 13.6% busy  (user=5.9 irq=0.0 sirq=0.0 idle=86.4)
+  cpu18: 35.2% busy  (user=16.0 irq=0.0 sirq=6.8 idle=64.8)
+  cpu19: 13.2% busy  (user=5.5 irq=0.0 sirq=0.0 idle=86.8)
+  cpu20: 28.1% busy  (user=8.6 irq=0.0 sirq=8.4 idle=71.9)
+  cpu21: 13.3% busy  (user=5.7 irq=0.0 sirq=0.0 idle=86.7)
+  cpu22: 27.4% busy  (user=7.9 irq=0.0 sirq=8.2 idle=72.6)
+  cpu23: 13.4% busy  (user=5.4 irq=0.0 sirq=0.0 idle=86.6)
+  cpu24: 26.8% busy  (user=8.2 irq=0.0 sirq=7.2 idle=73.2)
+  cpu25: 13.0% busy  (user=5.3 irq=0.0 sirq=0.0 idle=87.0)
+  cpu26: 28.8% busy  (user=7.5 irq=0.0 sirq=10.5 idle=71.2)
+  cpu27: 13.1% busy  (user=5.2 irq=0.0 sirq=0.0 idle=86.9)
+  cpu28: 28.6% busy  (user=8.6 irq=0.0 sirq=7.7 idle=71.4)
+  cpu29: 13.4% busy  (user=5.3 irq=0.0 sirq=0.0 idle=86.6)
+  cpu30: 24.1% busy  (user=9.2 irq=0.0 sirq=0.8 idle=75.9)
+  cpu31: 13.1% busy  (user=5.2 irq=0.0 sirq=0.0 idle=86.9)
+
+=== CPU frequencies (scaling_cur_freq) ===
+  cpu0:      cur= 1598232 Hz  max= 3200000 Hz  governor=schedutil
+  cpu10:     cur= 1798021 Hz  max= 3200000 Hz  governor=schedutil
+  cpu11:     cur= 1198663 Hz  max= 3200000 Hz  governor=schedutil
+  cpu12:     cur= 1598239 Hz  max= 3200000 Hz  governor=schedutil
+  cpu13:     cur= 1198671 Hz  max= 3200000 Hz  governor=schedutil
+  cpu14:     cur= 1598244 Hz  max= 3200000 Hz  governor=schedutil
+  cpu15:     cur= 1198673 Hz  max= 3200000 Hz  governor=schedutil
+  cpu16:     cur= 1598255 Hz  max= 3200000 Hz  governor=schedutil
+  cpu17:     cur= 1198687 Hz  max= 3200000 Hz  governor=schedutil
+  cpu18:     cur= 1598262 Hz  max= 3200000 Hz  governor=schedutil
+  cpu19:     cur= 1198689 Hz  max= 3200000 Hz  governor=schedutil
+  cpu1:      cur= 1198664 Hz  max= 3200000 Hz  governor=schedutil
+  cpu20:     cur= 1698102 Hz  max= 3200000 Hz  governor=schedutil
+  cpu21:     cur= 1198694 Hz  max= 3200000 Hz  governor=schedutil
+  cpu22:     cur= 1698128 Hz  max= 3200000 Hz  governor=schedutil
+  cpu23:     cur= 1198689 Hz  max= 3200000 Hz  governor=schedutil
+  cpu24:     cur= 1598259 Hz  max= 3200000 Hz  governor=schedutil
+  cpu25:     cur= 1198690 Hz  max= 3200000 Hz  governor=schedutil
+  cpu26:     cur= 1698140 Hz  max= 3200000 Hz  governor=schedutil
+  cpu27:     cur= 1198704 Hz  max= 3200000 Hz  governor=schedutil
+  cpu28:     cur= 1598251 Hz  max= 3200000 Hz  governor=schedutil
+  cpu29:     cur= 1198695 Hz  max= 3200000 Hz  governor=schedutil
+  cpu2:      cur= 1598244 Hz  max= 3200000 Hz  governor=schedutil
+  cpu30:     cur= 1598259 Hz  max= 3200000 Hz  governor=schedutil
+  cpu31:     cur= 1198703 Hz  max= 3200000 Hz  governor=schedutil
+  cpu3:      cur= 1198668 Hz  max= 3200000 Hz  governor=schedutil
+  cpu4:      cur= 1698140 Hz  max= 3200000 Hz  governor=schedutil
+  cpu5:      cur= 1198659 Hz  max= 3200000 Hz  governor=schedutil
+  cpu6:      cur= 1698135 Hz  max= 3200000 Hz  governor=schedutil
+  cpu7:      cur= 1198660 Hz  max= 3200000 Hz  governor=schedutil
+  cpu8:      cur= 1598243 Hz  max= 3200000 Hz  governor=schedutil
+  cpu9:      cur= 1198673 Hz  max= 3200000 Hz  governor=schedutil
+
+=== RAPL CPU power (1 second measurement) ===
+  package-0: 0.000W  (delta=0uJ over 1s)
+  dram: 0.000W  (delta=0uJ over 1s)
+  package-1: 0.000W  (delta=0uJ over 1s)
+  dram: 0.000W  (delta=0uJ over 1s)
+
+=== Top IRQ contributors ===
+  69998525576 interrupts  LOC: 4013221316 1335563387  337679349  890296052 3753592022 1717267667 4290427232 1864878504  540649129 2991460436  919329462 4086106983 3942384209 3511737077 1526397265 4073790263 1018804119  982289038 3311208379 1584236114 1413080087 1499904961 2448045375 1256597300 1636768556 2464616464  372258730  863123530 3289530019  950401688 3379385880 3733494983   Local timer interrupts
+  67331605228 interrupts  CAL:  394413197 2637819964  263306552 2683269816  146995817 2667399586  143595610 2672922761  196360554 2668568976 4269284493 2665232917  124965035 2673507704 2171959867 2669873172 2480880846 2611228993 2009736850 2700710134 2457870775 2697513518 2391434018 2703465366 2093515308 2697512403 2795081765 2697725452 2120887928 2701813448  409271282 2713481121   Function call interrupts
+  31170597115 interrupts  IWI:  862630745  130737408  835328950  139414335  798803514  139117270  775660695  137279138  791983636  137857609  692670495  135184627  768163840  135184375 2779234977  132205969 3441395390  124182247 2208345708  131795588 3117623944  133478326 2790696296  132399715 2617898288  132520304 3537469658  131017441 2155034868  131736297  864079269  129466193   IRQ work interrupts
+  15247342749 interrupts  RES:  870474624  100458441  862484670   96283399  845987997   95096837  833908274   95471524  829851449   95269030  813292220   94531241  827392150   94889940  829380890   94606939  812415245   98096899  892189481   95224406  863133535   94998977  874905803   94424901  887549097   94369416  887469791   94249403  915265405   93797067  875815435   94058263   Rescheduling interrupts
+  9564060950 enp6s0f3-TxRx-4  159:          0          0          0          0 1569778638          0          1          0 3314473173          0  550257977          0          0          0 4126399284          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSI 3151877-edge      enp6s0f3-TxRx-4
+  6199746030 enp6s0f3-TxRx-1  156:          0          0          0          0          0          0 1906222906          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0 4290371249          0          1          0  IR-PCI-MSI 3151874-edge      enp6s0f3-TxRx-1
+  5689746057 enp6s0f3-TxRx-0  155:          0          0          0          0          0          0          0          0          1          0          0          0          0          0          0          0 3251307080          0          0          0          0          0          0          0          0          0          0          0 2435287103          0          0          0  IR-PCI-MSI 3151873-edge      enp6s0f3-TxRx-0
+  5452098972 enp6s0f3-TxRx-5  160:  578590412          0          0          0          0          0          0          0          1          0          0          0          0          0          0          0          0          0          0          0          0          0 1232892684          0          0          0          0          0          0          0 3637463997          0  IR-PCI-MSI 3151878-edge      enp6s0f3-TxRx-5
+  4838255603 enp6s0f3-TxRx-6  161:          0          0          0          0          0          0          0          0 2536844400          0          0          0          1          0          0          0          0          0          0          0          0          0          0          0          0          0 2298259323          0          0          0          0          0  IR-PCI-MSI 3151879-edge      enp6s0f3-TxRx-6
+  4429324525 enp6s0f3-TxRx-3  158:          0          0          0          0          1          0          0          0          0          0          0          0 1659360592          0          0          0          0          0 2766812056          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSI 3151876-edge      enp6s0f3-TxRx-3
+  4308050672 enp6s0f3-TxRx-2  157:          0          0 1006418455          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0 3298480342          0          0          0          0          0          0          0  IR-PCI-MSI 3151875-edge      enp6s0f3-TxRx-2
+  3900137828 enp6s0f3-TxRx-7  162:     162359          0          0          0          0          0     100829          0  766023176          0          0          0          0          0          1          0          0          0          0          0 3130699583          0          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSI 3151880-edge      enp6s0f3-TxRx-7
+  194721726 eno1-rx-1  184:   48416247          0          0          0          0          0          0          0          0          0          0          0          0          0    3811592          0          0          0          0          0   21881692          0          0          0          0          0   56686417          0          0          0   62877201          0  IR-PCI-MSI 1048577-edge      eno1-rx-1
+  67188738 ioat-msix  182:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          2          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSI 67188736-edge      ioat-msix
+  67186690 ioat-msix  181:          0          0          0          0          0          0          0          0          0          0          0          0          0          2          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0  IR-PCI-MSI 67186688-edge      ioat-msix
+
+=== Softirq counts ===
+                    CPU0       CPU1       CPU2       CPU3       CPU4       CPU5       CPU6       CPU7       CPU8       CPU9       CPU10      CPU11      CPU12      CPU13      CPU14      CPU15      CPU16      CPU17      CPU18      CPU19      CPU20      CPU21      CPU22      CPU23      CPU24      CPU25      CPU26      CPU27      CPU28      CPU29      CPU30      CPU31      
+          HI:          0          0          0          0          2          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          3          0          0          0          0          0          0          0          0          0
+       TIMER:  106649079   13844049  107543983   12951252   54564935   13545448   60446781   14275678   46457803   12853938   31609137   11989713   41703366   12274418   46852984   12065845   84384284   12989218  129597060   11450855  124935796   11603588  179937712   11634604  110752984   12617297   88739581   11501478  111716642   11228672   18962797   11645336
+      NET_TX:   88924576    2243878   69805523    1978035   78296960    1951500   82498199    1965865  216515920    2012242   94155993    1988936   60560198    1844677  115146831    1757574  156222499    1773351 3352357464    1779676 3119760307    1736657 2084357395    1832485 2501887522    1935020 3339408234    1985506  251018862    1748776  164700550    1687129
+      NET_RX:  627874206       6971 1006623001      17828 1570938759       8184 1910550685      24093 2322897801      20143  552790567       6205 1660737792       7182 4132014888       9020 3252213663       6177 2768142772       6290 3152637535       6279 1234874166       6726 3320084669      11956 2354966222       8992 2433051589       8994 3700724302      12788
+       BLOCK:         70     909243          3     923052          0     927227          0     926798         15     932541     671513     897750          0     919219          0     937291     306111     892422          7     906423          7     905437          8     900306          2     900616    4260837     897115       3659     893777          0     879867
+    IRQ_POLL:          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0          0
+     TASKLET:  124104448          2    1256318          2    1897355          2  147128478          2  269296611          2   55881124          2  107439490          2  538799438          2  804415738          0 3297201908          0 2979901504          0 2219123410          0 2742171291          0 3250055110          0 1154013908          0  376402044          0
+       SCHED:  919674307  824790027  775404188  717359907  787788646  688954416  839154791  689905508  804711080  713434601  775657676  836671028  783216255  743087339  821614168  750143864  777459011  687910326  748982808  687335741  792713493  684156935  829018362  754381654  773159994  697948068  789782355  781927458  791865361  773959376  837093725  733256197
+     HRTIMER:          0          0          0          0          0          0          0          0          0          0          0          0          0          0      16076          0      21007          0       4765          0      17532          0       9808          0      12064          0      17629          0       6375          0          0          0
+         RCU:  326808118  313166995  325525164  314025943  328309693  312535833  328815517  312289429  329752267  315302758  327361250  320342630  328926484  314677301  320179708  314616086  320634945  315123525  322411285  316260086  320645605  315188231  318969204  319672044  321409206  316508712  319782235  321018488  325427188  320807212  330872209  315914706
+
+=== Load average & uptime ===
+ 04:24:52 up 45 days, 13:08,  0 users,  load average: 14.11, 14.13, 13.92
+
+=== Memory ===
+               total        used        free      shared  buff/cache   available
+Mem:           64296       40286         584           3       23426       23309
+Swap:           8192          48        8143
+
+=== srsenb UE50 process details ===
+root      110735 22.4  1.2 1666488 855588 ?      SLl  Jul22 8651:30 srsenb /etc/srsenb/enb_ue50.conf
+
+=== CPU temperature ===
+  loc1: 61.0°C
+  Package id 0: 69.0°C
+  Core 0: 61.0°C
+  Core 1: 61.0°C
+  Core 2: 61.0°C
+  Core 3: 60.0°C
+  Core 4: 60.0°C
+  Core 5: 63.0°C
+  Core 6: 61.0°C
+  Core 7: 61.0°C
+  Package id 1: 60.0°C
+  Core 0: 52.0°C
+  Core 1: 53.0°C
+  Core 2: 57.0°C
+  Core 3: 53.0°C
+  Core 4: 54.0°C
+  Core 5: 55.0°C
+  Core 6: 55.0°C
+  Core 7: 55.0°C

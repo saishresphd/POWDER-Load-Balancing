@@ -1,0 +1,9 @@
+epoch_s,datetime_utc,delta_ms,label,gnb,ho_phase,gnb_pkg0_watts,gnb_total_watts,gnb_cpu_load,nof_ues,description,power_delta_vs_pre_W
+1787049106.000,2026-08-18T10:31:46.000Z,0,T0,gnb1,pre,22.39,46.206,14.11,50,LB decision fired. gnb1 50 UEs. pkg0=22.39W total=46.21W. avg_rtt=712ms,0.0
+1787049109.347,2026-08-18T10:31:49.347Z,3347,T1,gnb1,during,22.39,46.206,14.11,50,UE50 srsue SIGTERM on uehost1. Port 40501 released.,0.0
+1787049149.094,2026-08-18T10:32:29.094Z,43094,T2,gnb1,during,22.39,46.206,14.11,50,gnb1 srsenb UE50 slot killed. Port 40500 freed. gnb1→49 UEs.,0.0
+1787049149.852,2026-08-18T10:32:29.852Z,43852,T3,gnb2,during,12.549,23.37,0.12,1,gnb2 srsenb started. GTP=10.10.1.250 TX=60500. MME registration.,-9.841
+1787049164.085,2026-08-18T10:32:44.085Z,58085,T3b,gnb2,during,12.549,23.37,0.12,1,gnb2 ZMQ port 60500 LISTEN. MME S1AP accepted.,-9.841
+1787049226.280,2026-08-18T10:33:46.280Z,120280,T4,gnb2,during,12.549,23.37,0.12,1,UE50 srsue restarted with ue50_gnb2.conf. RRC attempt.,-9.841
+1787049345.371,2026-08-18T10:35:45.371Z,239371,T5,gnb2,post,12.549,23.37,0.12,1,UE50 attached gnb2. IP=10.45.0.51/24. DRB1 active.,-9.841
+1787049345.424,2026-08-18T10:35:45.424Z,239424,T6,gnb2,post,12.549,23.37,0.12,1,First ping. 0% loss. avg_rtt=828ms. HO confirmed.,-9.841
