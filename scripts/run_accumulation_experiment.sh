@@ -508,18 +508,35 @@ for UE_ID in $(seq "$START_UE" "$END_UE"); do
     kill_ue_procs "$UE_ID" "$UEH1" "srsue"
     kill_ue_procs "$UE_ID" "$GNB1" "srsenb"
     kill_ue_procs "$UE_ID" "$GNB2" "srsenb"
-    sleep 3
+    sleep 12   # wait for ZMQ ports to fully release (prevents "Address already in use")
 
     # ═══════════════════════════════════════════════════════════════════════
     # PHASE 1 — Attach UE N to gnb1 (ALL prior UEs stay connected)
     # ═══════════════════════════════════════════════════════════════════════
     log "  [P1] Starting srsenb slot for UE${UE_ID} on gnb1..."
     $SSH "$GNB1" "bash -c 'sudo mkdir -p /tmp/gnb1_logs; sudo rm -f /tmp/gnb1_logs/ue${UE_ID}_stdout.log; sudo touch /tmp/gnb1_logs/ue${UE_ID}_stdout.log; sudo chmod 666 /tmp/gnb1_logs/ue${UE_ID}_stdout.log; sudo bash -c \"srsenb /etc/srsenb/enb_ue${UE_ID}.conf </dev/null >>/tmp/gnb1_logs/ue${UE_ID}_stdout.log 2>&1 &\"'" 2>/dev/null
-    sleep 3
+    # Wait 25s for srsenb to register with MME before starting srsue
+    sleep 25
+
+    # Verify srsue port is free before starting (prevent "Address already in use")
+    local UE_TX_PORT="$GNB1_RX"   # srsue tx_port = gnb1 rx_port
+    $SSH "$UEH1" python3 << PORTCHECK 2>/dev/null
+import subprocess, time
+for _ in range(10):
+    r = subprocess.run(['ss','-tlnp'], capture_output=True, text=True)
+    if '${UE_TX_PORT}' not in r.stdout:
+        print("port_free")
+        break
+    time.sleep(3)
+else:
+    # Force kill anything on that port
+    r2 = subprocess.run(['fuser','-k','${UE_TX_PORT}/tcp'], capture_output=True)
+    print("port_cleared")
+PORTCHECK
 
     log "  [P1] Starting srsue UE${UE_ID} → gnb1..."
     T0_ATTACH=$(epoch_now)
-    $SSH "$UEH1" "bash -c 'sudo rm -f /tmp/ue${UE_ID}_stdout.log; sudo touch /tmp/ue${UE_ID}_stdout.log; sudo chmod 666 /tmp/ue${UE_ID}_stdout.log; sudo bash -c \"srsue /etc/srsue/ue${UE_ID}.conf </dev/null >>/tmp/ue${UE_ID}_stdout.log 2>&1 &\"'" 2>/dev/null
+    $SSH "$UEH1" "bash -c 'sudo rm -f /tmp/ue${UE_ID}_stdout.log; sudo touch /tmp/ue${UE_ID}_stdout.log; sudo chmod 666 /tmp/ue${UE_ID}_stdout.log; sudo rm -f /tmp/ue${UE_ID}.log; sudo touch /tmp/ue${UE_ID}.log; sudo chmod 666 /tmp/ue${UE_ID}.log; sudo bash -c \"srsue /etc/srsue/ue${UE_ID}.conf </dev/null >>/tmp/ue${UE_ID}_stdout.log 2>&1 &\"'" 2>/dev/null
 
     ATTACH_OK_GNB1=0; UE_IP_GNB1=""; ATTACH_LAT=""
     if UE_IP_GNB1=$(wait_attach "$UE_ID"); then
@@ -591,11 +608,12 @@ for UE_ID in $(seq "$START_UE" "$END_UE"); do
 
     # Start gnb2 srsenb slot
     $SSH "$GNB2" "bash -c 'sudo mkdir -p /tmp/gnb2_logs; sudo rm -f /tmp/gnb2_logs/ue${UE_ID}_stdout.log; sudo touch /tmp/gnb2_logs/ue${UE_ID}_stdout.log; sudo chmod 666 /tmp/gnb2_logs/ue${UE_ID}_stdout.log; sudo bash -c \"srsenb /etc/srsenb/enb_ue${UE_ID}.conf </dev/null >>/tmp/gnb2_logs/ue${UE_ID}_stdout.log 2>&1 &\"'" 2>/dev/null
-    sleep 5
+    # Wait for gnb2 srsenb to register with MME
+    sleep 25
 
     # Start srsue → gnb2
     T0_ATTACH_GNB2=$(epoch_now)
-    $SSH "$UEH1" "bash -c 'sudo rm -f /tmp/ue${UE_ID}_gnb2_stdout.log; sudo touch /tmp/ue${UE_ID}_gnb2_stdout.log; sudo chmod 666 /tmp/ue${UE_ID}_gnb2_stdout.log; sudo bash -c \"srsue /etc/srsue/ue${UE_ID}_gnb2.conf </dev/null >>/tmp/ue${UE_ID}_gnb2_stdout.log 2>&1 &\"'" 2>/dev/null
+    $SSH "$UEH1" "bash -c 'sudo rm -f /tmp/ue${UE_ID}_gnb2_stdout.log; sudo touch /tmp/ue${UE_ID}_gnb2_stdout.log; sudo chmod 666 /tmp/ue${UE_ID}_gnb2_stdout.log; sudo rm -f /tmp/ue${UE_ID}_gnb2.log; sudo touch /tmp/ue${UE_ID}_gnb2.log; sudo chmod 666 /tmp/ue${UE_ID}_gnb2.log; sudo bash -c \"srsue /etc/srsue/ue${UE_ID}_gnb2.conf </dev/null >>/tmp/ue${UE_ID}_gnb2_stdout.log 2>&1 &\"'" 2>/dev/null
 
     # Wait for gnb2 attach (dual detection)
     ATTACH_OK_GNB2=0; UE_IP_GNB2=""; HO_TOTAL_MS=""; HO_ATTACH_MS=""
@@ -663,14 +681,14 @@ IPEOF
     log "  gnb2 snap: RAPL=$(echo $SNAP_GNB2|cut -d'|' -f1|cut -d, -f3)W  nof_ues=${NOF_GNB2_FINAL}  dl=$(echo $IPERF_GNB2|cut -d, -f1)Mbps"
 
     # ── Cleanup: kill this UE on gnb2 so next UE can attach cleanly ────────────
-    # (gnb2 only supports one active S1AP session per unique s1c_bind_addr)
+    # (gnb2 S1AP uses shared 10.10.1.3 addr; only one slot active at a time)
     log "  [Cleanup] Killing UE${UE_ID} on gnb2..."
     kill_ue_procs "$UE_ID" "$UEH1" "srsue"
-    sleep 6
-    kill_ue_procs "$UE_ID" "$GNB2" "srsenb"
     sleep 8
-    log "  [Cleanup] UE${UE_ID} gnb2 processes killed, waiting 20s MME cleanup..."
-    sleep 20
+    kill_ue_procs "$UE_ID" "$GNB2" "srsenb"
+    sleep 12
+    log "  [Cleanup] UE${UE_ID} gnb2 processes killed, waiting 40s for SCTP+MME cleanup..."
+    sleep 40
 
     log "  ✓ UE${UE_ID} complete. gnb1=${NOF_GNB1_FINAL} gnb2=cleaned"
     echo ""
