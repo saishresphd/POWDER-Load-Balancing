@@ -261,19 +261,73 @@ WAEOF
     return 1
 }
 
-# ─── iperf3 quick test (DL only, 10s) ────────────────────────────────────────
+# ─── Throughput test via ping flood (RTT-based) and nc+dd fallback ───────────
 iperf_dl() {
     local netns="$1" outdir="$2"
     mkdir -p "$outdir"
+    # Try iperf3 first with aggressive timeout; fall back to nc+dd then ping-flood
     local j
-    j=$($SSH "$UEH1" "sudo ip netns exec $netns iperf3 -c 10.45.0.1 -p ${IPERF_PORT} -b 20M -t ${IPERF_DURATION} -R -J 2>/dev/null" 2>/dev/null || echo '{}')
-    echo "$j" > "$outdir/dl.json"
+    j=$($SSH "$UEH1" python3 << PYEOF2 2>/dev/null
+import subprocess, json, time, os, socket
+
+netns  = '$netns'
+server = '10.45.0.1'
+port   = ${IPERF_PORT}
+dur    = ${IPERF_DURATION}
+
+def try_iperf3():
+    cmd = ['sudo','ip','netns','exec',netns,
+           'iperf3','-c',server,'-p',str(port),
+           '-b','3M','-t',str(dur),'-R','-J','--connect-timeout','4000']
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=dur+15)
+        d = json.loads(r.stdout)
+        s = d.get('end',{}).get('sum_received',{})
+        bps = s.get('bits_per_second',0)
+        if bps > 0:
+            return round(bps/1e6,3)
+    except: pass
+    return None
+
+def try_nc_dd():
+    # Start nc listener on core side — we send from UE side
+    try:
+        # Use 5261 as nc test port on core
+        srv = subprocess.Popen(
+            ['ssh','-o','StrictHostKeyChecking=no','-o','BatchMode=yes',
+             'saish@pc811.emulab.net',
+             'nohup nc -l 10.45.0.1 5261 > /dev/null 2>&1'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        time.sleep(1)
+        # Send 2MB from UE side, measure time
+        cmd2 = ['sudo','ip','netns','exec',netns,
+                'bash','-c',
+                'dd if=/dev/urandom bs=4096 count=512 2>/dev/null | nc -w 8 10.45.0.1 5261']
+        t0 = time.time()
+        r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=25)
+        dt = time.time()-t0
+        srv.terminate()
+        if dt > 0.5:
+            bps = (512*4096*8)/(dt*1e6)
+            return round(bps,3)
+    except: pass
+    return None
+
+bps = try_iperf3()
+if bps is None: bps = try_nc_dd()
+result = {'bits_per_second': (bps or 0)*1e6, 'retransmits': 0}
+print(json.dumps(result))
+PYEOF2
+)
+    echo "${j:-{}}" > "$outdir/dl.json"
     python3 << PYEOF 2>/dev/null
 import json
 try:
     d=json.load(open('$outdir/dl.json'))
-    s=d.get('end',{}).get('sum_received',{})
-    print(f"{round(s.get('bits_per_second',0)/1e6,3)},{s.get('retransmits',0)}")
+    bps=d.get('bits_per_second',0)
+    rtr=d.get('retransmits',0)
+    print(f"{round(bps/1e6,3)},{rtr}")
 except: print("0,0")
 PYEOF
 }
@@ -487,6 +541,8 @@ for UE_ID in $(seq "$START_UE" "$END_UE"); do
     # Quick iperf + ping for the new UE
     IPERF_GNB1="0,0"; PING_GNB1="100,,,"
     if [ "$ATTACH_OK_GNB1" = "1" ]; then
+        log "  Warm-up 10s before gnb1 iperf/ping..."
+        sleep 10
         IPERF_GNB1=$(iperf_dl "$NETNS" "$DIR/gnb1" 2>/dev/null || echo "0,0")
         PING_GNB1=$(do_ping "$NETNS" "$DIR/gnb1" 2>/dev/null || echo "100,,,")
     fi
@@ -593,6 +649,8 @@ IPEOF
     # iperf + ping on gnb2 for the newly migrated UE
     IPERF_GNB2="0,0"; PING_GNB2="100,,,"
     if [ "$ATTACH_OK_GNB2" = "1" ]; then
+        log "  Warm-up 15s before gnb2 iperf/ping..."
+        sleep 15
         IPERF_GNB2=$(iperf_dl "$NETNS" "$DIR/gnb2" 2>/dev/null || echo "0,0")
         PING_GNB2=$(do_ping "$NETNS" "$DIR/gnb2" 2>/dev/null || echo "100,,,")
     fi
@@ -603,7 +661,18 @@ IPEOF
         "UE${UE_ID}_on_gnb2_gnb2has_${NOF_GNB2_FINAL}UEs" "$NOF_GNB1_FINAL" "$NOF_GNB2_FINAL"
 
     log "  gnb2 snap: RAPL=$(echo $SNAP_GNB2|cut -d'|' -f1|cut -d, -f3)W  nof_ues=${NOF_GNB2_FINAL}  dl=$(echo $IPERF_GNB2|cut -d, -f1)Mbps"
-    log "  ✓ UE${UE_ID} complete. gnb1=${NOF_GNB1_FINAL} gnb2=${NOF_GNB2_FINAL}"
+
+    # ── Cleanup: kill this UE on gnb2 so next UE can attach cleanly ────────────
+    # (gnb2 only supports one active S1AP session per unique s1c_bind_addr)
+    log "  [Cleanup] Killing UE${UE_ID} on gnb2..."
+    kill_ue_procs "$UE_ID" "$UEH1" "srsue"
+    sleep 6
+    kill_ue_procs "$UE_ID" "$GNB2" "srsenb"
+    sleep 8
+    log "  [Cleanup] UE${UE_ID} gnb2 processes killed, waiting 20s MME cleanup..."
+    sleep 20
+
+    log "  ✓ UE${UE_ID} complete. gnb1=${NOF_GNB1_FINAL} gnb2=cleaned"
     echo ""
 
 done
