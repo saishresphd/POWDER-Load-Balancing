@@ -1,0 +1,84 @@
+====================================================================
+KEY FINDINGS — gNB1 UE Accumulation Experiment
+srsRAN 4G + Open5GS | POWDER testbed | gNB1 = pc818
+====================================================================
+
+Dataset: 868 measured samples
+ue_count coverage: 0–50 (51 levels)
+  measured:      ue_count 0 + 9–38
+  interpolated:  ue_count 1–8  (linear, anchored 0→9)
+  extrapolated:  ue_count 39–50 (linear, from ue=30–38 plateau slope)
+
+────────────────────────────────────────────────────────────────────
+BASELINE (ue_count=0)
+────────────────────────────────────────────────────────────────────
+  CPU util:    13.1%
+  RAPL power:  15.16 W
+  DRAM power:  1.59 W
+  Temp:        64.6 °C
+  DL brate:    0.00 Mbps
+
+────────────────────────────────────────────────────────────────────
+PEAK MEASURED (ue_count=32)
+────────────────────────────────────────────────────────────────────
+  CPU util:    36.7%
+  RAPL power:  23.27 W
+  DL brate:    6.51 Mbps
+
+────────────────────────────────────────────────────────────────────
+EQ.2  P(load) = α·load^β + γ  [power-law fit inputs]
+────────────────────────────────────────────────────────────────────
+  γ (Pbase):        15.158 W
+  P at ue=32:       23.267 W
+  P at ue=50(ext):  21.248 W
+  ΔP (0→32):        8.109 W
+  ΔP (0→50):        6.091 W
+
+────────────────────────────────────────────────────────────────────
+EQ.3  Ptotal = Pbase + NaU·PaU + NUi·PUi  [component model]
+────────────────────────────────────────────────────────────────────
+  Pbase:  15.158 W   (idle gNB, no UEs)
+  PaU:    0.2748 W/UE (per attached-idle UE, ue=9-12 region)
+  PUi:    0.2992 W/UE (per active-traffic UE, above Pbase)
+
+  Validation (ue=32, all active):
+    Ptotal_model  = 15.158 + 32×0.2992 = 24.731 W
+    Ptotal_meas   = 23.267 W
+
+────────────────────────────────────────────────────────────────────
+EQ.4  Psaved = Pactive − Pswitched  [9-UE LB: UE40-49 gNB1→gNB2]
+────────────────────────────────────────────────────────────────────
+  NOTE: Power plateaus at ~21.5–23.3 W above ~14 UEs (scheduler
+  fully loaded). Max benefit occurs when LB drops gNB1 *below*
+  the plateau threshold. Within-plateau migration shows small saving.
+
+  Scenario A — 40 UEs → migrate 9 (UE40-49) → 31 remain:
+    Pactive   (40 UEs):  21.750 W
+    Pswitched (31 UEs):  22.898 W
+    Psaved:              -1.148 W  (-5.28%)
+
+  Scenario B — 50 UEs → migrate 9 (UE40-49) → 41 remain [paper ext]:
+    Pactive   (50 UEs):  21.248 W
+    Pswitched (41 UEs):  21.700 W
+    Psaved:              -0.451 W  (-2.12%)
+
+  Scenario C — LB drops gNB1 below plateau threshold (~14 UEs):
+    Ppeak  (ue=32 meas): 23.267 W
+    Pthreshold (ue=14):  19.915 W
+    Psaved (max):        3.352 W  (14.41%)
+
+────────────────────────────────────────────────────────────────────
+RAN PHY/MAC METRICS (from srsenb log parsing)
+────────────────────────────────────────────────────────────────────
+  dl_mcs, ul_mcs, dl_cqi, ul_snr, dl_prb, ul_prb, dl_bler, ul_bler
+  all present in dataset_per_ue_count.csv.
+  Non-zero values captured in ue=13-34 region (active iperf traffic).
+
+====================================================================
+OUTPUT FILES
+====================================================================
+  dataset_per_ue_count.csv   — full table, ue_count 0-50
+  dataset_power_model.csv    — Eq.2 power-law inputs
+  dataset_eq3_components.csv — Eq.3 component model values
+  dataset_eq4_lb_saving.csv  — Eq.4 LB saving for all N scenarios
+  key_findings.txt           — this file

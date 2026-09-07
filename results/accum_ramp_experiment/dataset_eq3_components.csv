@@ -1,0 +1,7 @@
+component,value_W,description
+Pbase,15.158,Idle gNB power (ue_count=0)
+PaU,0.2748,Marginal W per attached-idle UE (ue=9-12 region)
+PUi,0.2992,Marginal W per active-iperf UE (above Pbase)
+Ppeak_ue32,23.267,Measured peak power at ue_count=32
+Ppeak_ue37,21.947,Measured power at ue_count=37
+Ppeak_ue50,21.248,Extrapolated power at ue_count=50
