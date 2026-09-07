@@ -1,34 +1,33 @@
-#!/usr/bin/env bash
-# launch_gnb1_collectors.sh — Start all data collectors on gNB1 (pc818)
-# Run from: gNB1 node via master_lb_experiment.sh
+#!/bin/bash
+# launch_gnb1_collectors.sh — start ALL data collectors on gNB1 (pc818)
+# Called by master_lb_experiment.sh Phase 1 via SSH from uehost1
 set -euo pipefail
 
-COLLECT_DIR="/tmp/ran_collect"
-REPO_DIR="${REPO_DIR:-$HOME/POWDER-Load-Balancing}"
-DURATION=7200   # 2 hours max
+mkdir -p /tmp/ran_collect
 
-mkdir -p "$COLLECT_DIR"
+chmod +x /tmp/ran_collect/collect_rich_gnb1.sh /tmp/ran_collect/gnb1_sys_monitor.sh \
+         /tmp/ran_collect/collect_gnb_metrics.sh /tmp/ran_collect/collect_power.sh \
+         /tmp/ran_collect/collect_perf_ipc.sh 2>/dev/null || true
 
-# System metrics (CPU/mem/net every 5s)
-nohup bash "$REPO_DIR/scripts/collect_system_metrics.sh" gnb1 \
-    > "$COLLECT_DIR/system_metrics_gnb1.log" 2>&1 &
+nohup bash /tmp/ran_collect/gnb1_sys_monitor.sh 3600 > /tmp/ran_collect/gnb1_sysmon_run.log 2>&1 &
+echo "SYS_PID:$!"
+sleep 1
 
-# Per-UE gNB metrics (nof_ue, sys_load, dl_brate, ul_brate every 5s)
-nohup bash "$REPO_DIR/scripts/collect_gnb_metrics.sh" 5 "$DURATION" gnb1 1 51 \
-    > "$COLLECT_DIR/gnb_metrics_gnb1.log" 2>&1 &
-ln -sf "$COLLECT_DIR/gnb_metrics.csv" "$COLLECT_DIR/gnb_metrics_raw_gnb1.csv"
+nohup bash /tmp/ran_collect/collect_rich_gnb1.sh > /tmp/ran_collect/collect_rich_gnb1_run.log 2>&1 &
+echo "RICH_PID:$!"
 
-# RAPL package + DRAM power (1s interval)
-nohup bash "$REPO_DIR/scripts/collect_power.sh" gnb1 \
-    > "$COLLECT_DIR/power_gnb1.log" 2>&1 &
+nohup bash /tmp/ran_collect/collect_gnb_metrics.sh 5 7200 gnb1 1 51 > /tmp/ran_collect/gnb_metrics_collect.log 2>&1 &
+echo "GNB_METRICS_PID:$!"
 
-# Per-core + per-process deep sysmon (2s interval)
-nohup python3 "$REPO_DIR/scripts/deep_sysmon.py" "$DURATION" 2 srsenb \
-    "$COLLECT_DIR/deep_sysmon_gnb1.csv" \
-    > "$COLLECT_DIR/deep_sysmon_gnb1.log" 2>&1 &
+nohup sudo bash /tmp/ran_collect/collect_power.sh 1 7200 > /tmp/ran_collect/power_collect.log 2>&1 &
+echo "POWER_PID:$!"
 
-# perf IPC / cycles / instructions per core (10s windows)
-nohup bash "$REPO_DIR/scripts/collect_perf_ipc.sh" gnb1 \
-    > "$COLLECT_DIR/perf_ipc_gnb1.log" 2>&1 &
+nohup python3 /tmp/ran_collect/deep_sysmon.py 7200 2 srsenb /tmp/ran_collect/deep_sysmon_gnb1.csv > /tmp/ran_collect/deep_sysmon.log 2>&1 &
+echo "DEEP_SYSMON_PID:$!"
 
-echo "All gNB1 collectors launched."
+nohup bash /tmp/ran_collect/collect_perf_ipc.sh 5 7200 > /tmp/ran_collect/perf_ipc.log 2>&1 &
+echo "PERF_IPC_PID:$!"
+
+ln -sf /tmp/ran_collect/gnb_metrics.csv /tmp/ran_collect/gnb_metrics_raw_gnb1.csv
+
+echo "STARTED"
